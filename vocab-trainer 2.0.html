@@ -1,0 +1,3201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Core Vocabulary Trainer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEEBDD; --bg-elev:#FFFDF6; --bg-elev-2:#F2ECD9; --text:#232A3B; --text-dim:#565F52;
+  --border:#C9C3AE; --accent:#A8402F; --accent-ink:#FFFDF6; --highlight:#EFC94C; --good:#7C8768; --bad:#A8402F;
+  --warn-ink:#8A6A18;
+  --radius:4px; --radius-sm:3px;
+  --shadow:5px 5px 0 rgba(35,42,59,.14); --shadow-sm:3px 3px 0 rgba(35,42,59,.12);
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;
+  --serif:'Fraunces','Georgia',serif;
+  --sans:'Inter',system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background-color:var(--bg);
+  background-image:repeating-linear-gradient(45deg, rgba(35,42,59,.015) 0px, rgba(35,42,59,.015) 1px, transparent 1px, transparent 12px);
+  color:var(--text); font-family:var(--sans);
+  -webkit-font-smoothing:antialiased; min-height:100vh;
+}
+button{font-family:inherit;}
+input,textarea,select{font-family:inherit;}
+.hidden{display:none!important;}
+a{color:var(--accent);}
+
+/* App shell */
+#app{max-width:920px;margin:0 auto;padding:0 16px 80px;}
+header.topbar{
+  position:sticky;top:0;z-index:40;background:var(--bg);border-bottom:1.5px solid var(--text);
+  padding:16px 16px 0;margin:0 -16px 20px;
+}
+.topbar-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;max-width:920px;margin:0 auto;padding:0 16px;}
+.topbar h1{font-family:var(--serif);font-size:24px;margin:0;font-weight:700;letter-spacing:-0.01em;}
+.topbar .sub{font-size:12.5px;color:var(--text-dim);margin-top:4px;}
+.due-stamp{
+  font-family:var(--mono);text-transform:uppercase;letter-spacing:.04em;font-size:11px;font-weight:700;
+  background:var(--highlight);color:var(--text);border:1.5px solid var(--text);border-radius:var(--radius-sm);
+  padding:7px 10px;transform:rotate(-3deg);white-space:nowrap;box-shadow:var(--shadow-sm);
+}
+nav.tabs{display:flex;gap:2px;max-width:920px;margin:14px auto 0;padding:0 16px;overflow-x:auto;}
+nav.tabs button{
+  font-family:var(--sans);background:none;border:none;color:var(--text-dim);padding:10px 14px;font-size:13.5px;font-weight:600;
+  cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;
+}
+nav.tabs button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:700;}
+nav.tabs button:hover{color:var(--text);}
+
+.view{display:none;}
+.view.active{display:block;}
+
+/* Cards */
+.card{background:var(--bg-elev);border:1.5px solid var(--text);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:14px;}
+.card h2{margin:0 0 12px;font-family:var(--serif);font-size:19px;font-weight:700;}
+.card h3{margin:0 0 8px;font-family:var(--mono);font-size:11px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}
+.stat{background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;}
+.stat .num{font-family:var(--serif);font-size:26px;font-weight:700;line-height:1.1;}
+.stat .label{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin-top:4px;}
+.stat.warn .num{color:var(--warn-ink);}
+.stat.bad .num{color:var(--bad);}
+.stat.good .num{color:var(--good);}
+
+.banner{border:1.5px solid var(--text);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:14px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:flex-start;}
+.banner.warn{background:rgba(239,201,76,.35);color:var(--warn-ink);}
+.banner.info{background:rgba(35,42,59,.06);color:var(--text);}
+.banner.bad{background:rgba(168,64,47,.14);color:var(--bad);}
+
+/* Buttons */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1.5px solid var(--text);border-radius:var(--radius-sm);
+  padding:10px 18px;font-size:13.5px;font-weight:700;cursor:pointer;transition:transform .05s;
+  background:var(--bg-elev);color:var(--text);
+}
+.btn:active{transform:translate(2px,2px);}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);}
+.btn.good{background:var(--good);color:#fff;border-color:var(--good);}
+.btn.bad{background:var(--bad);color:#fff;border-color:var(--bad);}
+.btn.warn{background:var(--highlight);color:var(--text);border-color:var(--text);}
+.btn.ghost{background:transparent;border:1.5px solid var(--border);}
+.btn.small{padding:6px 12px;font-size:12px;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn-row{display:flex;gap:10px;flex-wrap:wrap;}
+
+/* Forms */
+label{display:block;font-family:var(--mono);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);margin:14px 0 6px;}
+label .req{color:var(--bad);}
+label .opt{font-weight:400;color:var(--text-dim);text-transform:none;}
+input[type=text],input[type=date],input[type=number],textarea,select{
+  width:100%;background:var(--bg-elev);border:1.5px solid var(--border);border-radius:var(--radius-sm);
+  padding:10px 12px;font-size:14.5px;font-family:var(--sans);color:var(--text);outline:none;
+}
+input:focus,textarea:focus,select:focus{border-color:var(--accent);}
+textarea{resize:vertical;min-height:52px;}
+.field-hint{font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:4px;}
+.field-error{font-family:var(--mono);font-size:11px;color:var(--bad);margin-top:4px;font-weight:700;}
+.repeat-group .row{display:flex;gap:8px;margin-bottom:8px;}
+.repeat-group .row input{flex:1;}
+fieldset{border:1.5px solid var(--border);border-radius:var(--radius-sm);padding:12px;margin:14px 0 0;}
+legend{font-family:var(--mono);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);padding:0 6px;}
+
+/* Badges */
+.badge{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:3px 8px;border-radius:var(--radius-sm);border:1px solid transparent;background:var(--bg-elev-2);color:var(--text-dim);}
+.badge.New{background:rgba(35,42,59,.07);color:var(--text-dim);border-color:var(--border);}
+.badge.Learning{background:rgba(168,64,47,.12);color:var(--accent);border-color:var(--accent);}
+.badge.Unstable{background:rgba(239,201,76,.32);color:var(--warn-ink);border-color:var(--highlight);}
+.badge.Stable{background:rgba(124,135,104,.18);color:var(--good);border-color:var(--good);}
+.badge.ExamReady{background:var(--highlight);color:var(--text);border:1.5px solid var(--text);transform:rotate(-2deg);}
+.badge.level{background:var(--bg-elev-2);}
+
+/* Word bank list */
+.word-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);}
+.word-row:last-child{border-bottom:none;}
+.word-row .w{font-family:var(--serif);font-weight:700;font-size:16px;}
+.pronunciation{font-family:var(--mono);font-size:13px;color:var(--text-dim);}
+.speak-btn{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--bg-elev-2);border-radius:var(--radius-sm);cursor:pointer;font-size:13px;line-height:1;padding:4px 7px;color:var(--text);}
+.speak-btn:hover{border-color:var(--accent);}
+.speak-btn.small{padding:2px 5px;font-size:11px;}
+.teach-headword-row{display:flex;align-items:center;gap:10px;justify-content:center;flex-wrap:wrap;}
+.reveal-word-row{display:flex;align-items:center;gap:8px;justify-content:center;flex-wrap:wrap;font-weight:700;}
+.word-row .meta{font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:2px;}
+.word-row .right{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;}
+.examples-panel{padding:0 0 12px;margin-top:-6px;}
+.examples-panel .teach-list li{margin-bottom:4px;}
+
+/* Practice screen */
+.practice-wrap{max-width:640px;margin:0 auto;}
+.practice-progress{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);text-align:center;margin-bottom:10px;}
+.practice-card{background:var(--bg-elev);border:1.5px solid var(--text);border-radius:var(--radius);padding:28px 24px;box-shadow:var(--shadow);text-align:center;}
+.practice-level{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-bottom:10px;}
+.practice-prompt{font-family:var(--serif);font-size:21px;font-weight:600;line-height:1.45;margin-bottom:18px;}
+.practice-prompt .blank{display:inline-block;min-width:70px;border-bottom:2px solid var(--text-dim);}
+.practice-sub{font-size:13.5px;color:var(--text-dim);margin-bottom:16px;}
+.practice-mnemonic{font-size:13px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:16px;color:var(--text-dim);}
+.practice-mnemonic.faded{font-style:italic;}
+.mcq-options{display:grid;gap:8px;margin-top:10px;}
+.mcq-options button{
+  text-align:left;padding:12px 14px;border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--bg-elev-2);
+  font-size:14.5px;cursor:pointer;color:var(--text);
+}
+.mcq-options button:hover{border-color:var(--accent);}
+.mcq-options button.correct{background:rgba(124,135,104,.2);border-color:var(--good);}
+.mcq-options button.incorrect{background:rgba(168,64,47,.16);border-color:var(--bad);}
+.answer-input{margin-top:6px;}
+.answer-input input,.answer-input textarea{text-align:center;font-size:16px;}
+.feedback{margin-top:16px;border:1.5px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;text-align:left;font-size:14px;}
+.feedback.correct{background:rgba(124,135,104,.16);border-color:var(--good);}
+.feedback.incorrect{background:rgba(168,64,47,.14);border-color:var(--bad);}
+.feedback .correct-answer{font-weight:700;margin-top:4px;}
+.rating-row{display:flex;gap:8px;justify-content:center;margin-top:16px;flex-wrap:wrap;}
+.self-check{text-align:left;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-top:14px;font-size:13px;}
+.self-check div{margin-bottom:4px;}
+.self-check b{color:var(--text-dim);font-weight:700;}
+.error-cats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:10px;}
+.error-cats button{padding:10px;border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--bg-elev-2);cursor:pointer;font-size:13px;font-weight:600;color:var(--text);}
+.error-cats button:hover{border-color:var(--bad);}
+.error-cats button.picked{background:rgba(168,64,47,.18);border-color:var(--bad);}
+
+/* modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(35,42,59,.55);display:flex;align-items:center;justify-content:center;z-index:100;padding:16px;}
+.modal{background:var(--bg-elev);border:1.5px solid var(--text);border-radius:var(--radius);padding:22px;max-width:480px;width:100%;max-height:85vh;overflow:auto;box-shadow:var(--shadow);}
+.modal h2{margin-top:0;font-family:var(--serif);}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg-elev);
+  padding:10px 18px;border-radius:var(--radius-sm);border:1.5px solid var(--text);font-size:13.5px;font-weight:600;z-index:200;box-shadow:var(--shadow-sm);}
+.empty-state{text-align:center;padding:36px 16px;color:var(--text-dim);}
+.empty-state .big{font-size:34px;margin-bottom:8px;}
+.empty-state h2{font-family:var(--serif);}
+.session-phase-nav{display:flex;gap:6px;justify-content:center;margin-bottom:16px;flex-wrap:wrap;}
+.session-phase-nav .dot{width:8px;height:8px;border-radius:50%;background:var(--border);}
+.session-phase-nav .dot.active{background:var(--accent);}
+.session-phase-nav .dot.done{background:var(--good);}
+.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:13px;}
+.bar-track{flex:1;height:8px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:99px;overflow:hidden;}
+.bar-fill{height:100%;background:var(--accent);}
+.small-link{background:none;border:none;color:var(--accent);font-size:13px;cursor:pointer;padding:0;font-weight:600;}
+hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
+.mt0{margin-top:0;}
+.center{text-align:center;}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+@media (max-width:520px){.two-col{grid-template-columns:1fr;}}
+
+/* Teaching phase */
+.teach-step-label{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--accent);margin-bottom:6px;}
+.teach-headword{font-family:var(--serif);font-size:28px;font-weight:800;margin-bottom:2px;}
+.teach-sub{font-size:13.5px;color:var(--text-dim);margin-bottom:14px;}
+.teach-box{background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px 16px;margin:10px 0;text-align:left;}
+.teach-box h4{margin:0 0 6px;font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-dim);}
+.teach-box.emph{border:1.5px solid var(--accent);}
+.teach-box.contrast{border:1.5px solid var(--highlight);background:rgba(239,201,76,.16);}
+.teach-list{margin:0;padding-left:18px;font-size:14px;line-height:1.6;}
+.teach-list li{margin-bottom:4px;}
+.teach-note{font-size:12.5px;color:var(--text-dim);margin-top:8px;font-style:italic;}
+.hint-ladder{text-align:left;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin:10px 0;font-size:13.5px;}
+.hint-ladder .hint-line{margin-bottom:6px;}
+.hint-ladder .hint-line b{color:var(--text-dim);}
+.diag-box{text-align:left;background:rgba(168,64,47,.1);border:1px solid var(--bad);border-radius:var(--radius-sm);padding:12px 14px;margin:12px 0;}
+.diag-box .expl{margin-top:8px;font-size:13.5px;}
+.step-progress-wrap{max-width:520px;margin:0 auto 14px;}
+.step-progress-track{height:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:99px;overflow:hidden;}
+.step-progress-fill{height:100%;background:var(--accent);transition:width .2s;}
+.dim-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-top:10px;}
+.dim-item{background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;}
+.dim-item .name{font-size:12px;font-weight:700;margin-bottom:6px;}
+.dim-item .track{height:6px;border-radius:99px;background:var(--border);overflow:hidden;display:flex;}
+.dim-item .track .seg{height:100%;}
+.dim-badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.02em;padding:2px 7px;border-radius:var(--radius-sm);margin-top:6px;}
+.dim-badge.Achieved{background:rgba(124,135,104,.2);color:var(--good);}
+.dim-badge.Developing{background:rgba(239,201,76,.32);color:var(--warn-ink);}
+.dim-badge.Notassessed{background:rgba(35,42,59,.07);color:var(--text-dim);}
+.badge.Untaught{background:rgba(168,64,47,.15);color:var(--bad);border-color:var(--bad);}
+.word-type-tag{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:.03em;font-weight:700;color:var(--text-dim);background:var(--bg-elev-2);border:1px solid var(--border);padding:2px 7px;border-radius:var(--radius-sm);}
+
+/* Writing module */
+.essay-preview{white-space:pre-wrap;word-wrap:break-word;font-size:14.5px;line-height:1.6;text-align:left;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;}
+.essay-preview mark{background:rgba(239,201,76,.55);border-radius:2px;padding:0 1px;cursor:default;}
+.tag-item{background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;text-align:left;font-size:13.5px;}
+.tag-item .quoted{font-weight:700;text-decoration:line-through;text-decoration-color:var(--bad);}
+.tag-item .arrow{color:var(--text-dim);margin:0 6px;}
+.tag-item .corrected{font-weight:700;color:var(--good);}
+.tag-item .meta-row{display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:8px;}
+.target-word-chip{display:inline-flex;align-items:center;gap:6px;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:99px;padding:6px 12px;font-weight:700;font-size:13.5px;margin:3px;}
+.exam-timer{font-family:var(--mono);font-size:38px;font-weight:700;text-align:center;margin:6px 0 14px;}
+.exam-timer.low{color:var(--bad);}
+.checklist-item{background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:10px;text-align:left;}
+.checklist-item .w{font-family:var(--serif);font-weight:700;font-size:16px;margin-bottom:8px;}
+.checklist-row{display:flex;gap:8px;flex-wrap:wrap;}
+.checklist-row button{padding:8px 12px;border-radius:var(--radius-sm);border:1.5px solid var(--border);background:var(--bg-elev);cursor:pointer;font-size:12.5px;font-weight:600;color:var(--text);}
+.checklist-row button.picked-correct{background:rgba(124,135,104,.2);border-color:var(--good);}
+.checklist-row button.picked-incorrect{background:rgba(168,64,47,.16);border-color:var(--bad);}
+.checklist-row button.picked-none{background:rgba(35,42,59,.1);border-color:var(--text-dim);}
+
+/* Analytics */
+.analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+@media (max-width:720px){.analytics-grid{grid-template-columns:1fr;}}
+.chart-card{background:var(--bg-elev);border:1.5px solid var(--text);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);}
+.chart-card h3{margin:0 0 4px;font-family:var(--serif);font-size:16px;font-weight:700;text-transform:none;letter-spacing:0;}
+.chart-card .chart-sub{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.03em;color:var(--text-dim);margin-bottom:10px;}
+.chart-wrap{position:relative;height:240px;}
+.achv-stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px;}
+.achv-scroll{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;}
+.achv-card{flex:0 0 auto;width:132px;background:var(--bg-elev-2);border-radius:var(--radius-sm);padding:14px 10px;text-align:center;border:1.5px solid var(--border);}
+.achv-card.unlocked{border-color:var(--accent);background:linear-gradient(160deg, rgba(168,64,47,.10), rgba(239,201,76,.16));}
+.achv-card.locked{opacity:.45;filter:grayscale(.6);}
+.achv-card .icon{font-size:28px;margin-bottom:6px;}
+.achv-card .name{font-size:12px;font-weight:700;line-height:1.3;}
+.achv-card .desc{font-size:10.5px;color:var(--text-dim);margin-top:4px;line-height:1.3;}
+.achv-card .lock{font-family:var(--mono);font-size:10px;text-transform:uppercase;color:var(--text-dim);margin-top:4px;}
+.streak-banner{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:16px;font-weight:700;}
+.streak-banner .flame{font-size:24px;}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="topbar-row">
+      <div>
+        <h1>Core Vocabulary Trainer</h1>
+        <div class="sub" id="topbarSub">Generative retrieval · Adaptive spacing</div>
+      </div>
+      <div class="due-stamp" id="dueBadge">0 due today</div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="dashboard" class="active">Dashboard</button>
+      <button data-tab="practice">Practice</button>
+      <button data-tab="add">Add Word</button>
+      <button data-tab="bank">Word Bank</button>
+      <button data-tab="errors">Errors</button>
+      <button data-tab="writing">Writing</button>
+      <button data-tab="analytics">Analytics</button>
+      <button data-tab="settings">Settings</button>
+    </nav>
+  </header>
+
+  <main id="views">
+    <section class="view" id="view-dashboard"></section>
+    <section class="view" id="view-practice"></section>
+    <section class="view" id="view-add"></section>
+    <section class="view" id="view-bank"></section>
+    <section class="view" id="view-errors"></section>
+    <section class="view" id="view-writing"></section>
+    <section class="view" id="view-analytics"></section>
+    <section class="view" id="view-settings"></section>
+    <section class="view" id="view-teaching"></section>
+  </main>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ============================== UTILITIES ============================== */
+const Utils = {
+  uid(){ return 'w_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,9); },
+  // Dates are stored as plain "YYYY-MM-DD" calendar strings (no timezone attached).
+  // todayISO() reads the user's local wall-clock date; every other helper below
+  // manipulates the Y/M/D components via Date.UTC so the arithmetic never gets
+  // reinterpreted through a local<->UTC conversion (which used to silently cancel
+  // out addDays() for anyone east of Greenwich, freezing SRS/chart dates in place).
+  todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); },
+  addDays(iso, n){ const [y,m,d] = iso.split('-').map(Number); const dt = new Date(Date.UTC(y,m-1,d)); dt.setUTCDate(dt.getUTCDate()+n); return dt.toISOString().slice(0,10); },
+  diffDays(a,b){ const [ay,am,ad]=a.split('-').map(Number), [by,bm,bd]=b.split('-').map(Number); return Math.round((Date.UTC(by,bm-1,bd)-Date.UTC(ay,am-1,ad))/86400000); },
+  fmtDate(iso){ if(!iso) return '—'; const [y,m,d]=iso.split('-').map(Number); return new Date(Date.UTC(y,m-1,d)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}); },
+  clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); },
+  escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
+  escapeRegex(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); },
+  normalize(s){ return String(s||'').trim().toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g,''); },
+  pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; },
+  shuffle(arr){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; },
+  levenshtein(a,b){
+    a=a.toLowerCase(); b=b.toLowerCase();
+    const m=a.length,n=b.length;
+    if(!m) return n; if(!n) return m;
+    const dp=Array.from({length:m+1},(_,i)=>[i,...Array(n).fill(0)]);
+    for(let j=0;j<=n;j++) dp[0][j]=j;
+    for(let i=1;i<=m;i++){
+      for(let j=1;j<=n;j++){
+        dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j-1],dp[i-1][j],dp[i][j-1]);
+      }
+    }
+    return dp[m][n];
+  },
+  toast(msg, ms){
+    const root = document.getElementById('toastRoot');
+    const el = document.createElement('div');
+    el.className='toast'; el.textContent=msg;
+    root.appendChild(el);
+    setTimeout(()=>el.remove(), ms||2400);
+  }
+};
+
+/* ============================== SPEECH (TEXT-TO-SPEECH) ============================== */
+const Speech = {
+  available(){ return typeof window!=='undefined' && 'speechSynthesis' in window; },
+  pickVoice(){
+    if(!this.available()) return null;
+    const voices = window.speechSynthesis.getVoices() || [];
+    return voices.find(v=>v.lang==='en-US') || voices.find(v=>v.lang==='en-GB') ||
+      voices.find(v=>/^en/i.test(v.lang)) || null;
+  },
+  speak(text){
+    if(!text) return;
+    if(!this.available()){ console.warn('SpeechSynthesis is not available in this browser.'); return; }
+    try{
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      const voice = this.pickVoice();
+      if(voice) utter.voice = voice;
+      utter.lang = voice ? voice.lang : 'en-US';
+      window.speechSynthesis.speak(utter);
+    }catch(e){ console.warn('SpeechSynthesis failed:', e); }
+  }
+};
+
+const AI_GENERATOR_PROMPT = `You are generating advanced vocabulary entries for a spaced-repetition trainer. For each word I give you, output exactly ONE line in this pipe-delimited format, with NO extra commentary, headers, numbering, or markdown — just the raw lines, one word per line:
+
+Word | Core Meaning & Nuance | Form | Grammar | Collocations | Contrast | Typical Contexts | Production Sentence | Mnemonic | Cloze Sentences | Pronunciation
+
+Field rules:
+1. Word — the headword exactly as I gave it.
+2. Core Meaning & Nuance — a precise definition (not a vague synonym), including any nuance that distinguishes it from near-synonyms.
+3. Form — part of speech and word family, e.g. "verb (trans.); noun form: abduction; adj form: abducted".
+4. Grammar — the patterns it takes: prepositions, transitivity, sentence structure, e.g. "~ sb from somewhere", "~ into + noun".
+5. Collocations — 3 to 4 natural word-partners, separated by ";". Vary them (verb+noun, adj+noun, noun+prep, etc.) rather than near-duplicates.
+6. Contrast — one closely related word it's often confused with, plus a one-line distinction.
+7. Typical Contexts — 3 to 4 short situations/topics where this word naturally comes up, separated by ";" (e.g. "true crime reporting", "a courtroom drama"). These are topic tags, NOT sentences, and must NOT contain the target word.
+8. Production Sentence — one clean original sentence using the word naturally.
+9. Mnemonic — a short, vivid memory hook (can reference sound, spelling, or a related word). Leave blank only if none is genuinely useful.
+10. Cloze Sentences — exactly 5 DIFFERENT original sentences, separated by ";", each containing the exact target word (so it can be auto-blanked). Each one must show a genuinely different use: a different collocation, a different register (casual vs. formal vs. academic), a different sentence structure (statement, question, subordinate clause), and ideally a different real-world domain (news, dialogue, narrative, science, etc.) so repeated practice never feels repetitive.
+11. Pronunciation (optional, may be omitted entirely along with its preceding "|") — a simple phonetic respelling, e.g. "ab-DUKT".
+
+Constraints:
+- Every field must be non-empty except Mnemonic and Pronunciation.
+- Never let a Typical Context or Collocation give away the word by accident-checking is fine, but Typical Contexts must read as topics, not sentences containing the word.
+- Keep tone and difficulty consistent with an advanced/exam-prep vocabulary list.
+- Output one line per word, nothing else — I will paste your output directly into the app's Paste Import box.
+
+Words to generate: `;
+
+const ERROR_CATEGORIES = ['Meaning','Form','Spelling','Grammar','Collocation','Register','Selection'];
+
+const ERROR_EXPLANATIONS = {
+  Meaning: 'The core sense got mixed up with a related but different idea. Re-read the Core Meaning and Contrast before retrying.',
+  Form: 'This is about the word\'s part of speech or word family (e.g. noun vs. verb form) — the wrong family was used.',
+  Spelling: 'The meaning and usage were fine, but the written form wasn\'t exact. Focus purely on the letters.',
+  Grammar: 'The pattern the word takes (prepositions, sentence structure) wasn\'t quite right — check the Grammar note.',
+  Collocation: 'The word itself was right, but the natural word-partners around it were off.',
+  Register: 'The tone or formality level didn\'t match the situation described.',
+  Selection: 'A near-synonym might have fit better here — review the Contrast to see the boundary.'
+};
+
+const CATEGORY_TO_DIM = {
+  Meaning:'meaningRecall', Form:'formRecognition', Spelling:'formRecall',
+  Grammar:'grammar', Collocation:'collocation', Register:'contextualComprehension', Selection:'semanticDiscrimination'
+};
+
+const DIMENSIONS = [
+  {key:'formRecognition', label:'Form Recognition'},
+  {key:'formRecall', label:'Form Recall (Spelling)'},
+  {key:'meaningRecognition', label:'Meaning Recognition'},
+  {key:'meaningRecall', label:'Meaning Recall'},
+  {key:'semanticDiscrimination', label:'Semantic Discrimination'},
+  {key:'grammar', label:'Grammar'},
+  {key:'collocation', label:'Collocation'},
+  {key:'contextualComprehension', label:'Contextual Comprehension'},
+  {key:'guidedProduction', label:'Guided Production'},
+  {key:'independentProduction', label:'Independent Production'},
+  {key:'novelApplication', label:'Novel Application'}
+];
+const DIM_KEYS = DIMENSIONS.map(d=>d.key);
+
+const WORD_TYPES = [
+  {key:'general', label:'General / mixed'},
+  {key:'concreteNoun', label:'Concrete noun'},
+  {key:'abstractVerb', label:'Abstract academic verb'},
+  {key:'polysemous', label:'Polysemous (multiple senses)'},
+  {key:'nearSynonym', label:'Near-synonym (needs boundary work)'},
+  {key:'difficultSpelling', label:'Difficult spelling'}
+];
+
+function freshDims(){
+  const d = {};
+  DIM_KEYS.forEach(k=>{ d[k] = { status:'Not assessed', success:0, fail:0 }; });
+  return d;
+}
+function repairDims(raw){
+  const d = freshDims();
+  if(raw && typeof raw==='object'){
+    DIM_KEYS.forEach(k=>{
+      if(raw[k] && typeof raw[k]==='object'){
+        d[k].status = ['Not assessed','Developing','Achieved'].includes(raw[k].status) ? raw[k].status : 'Not assessed';
+        d[k].success = Number(raw[k].success)||0;
+        d[k].fail = Number(raw[k].fail)||0;
+      }
+    });
+  }
+  return d;
+}
+const DimModel = {
+  record(word, dimKey, success){
+    const d = word.dims && word.dims[dimKey];
+    if(!d) return;
+    if(success){
+      d.success++;
+      d.status = d.success>=2 ? 'Achieved' : 'Developing';
+    } else {
+      d.fail++;
+      d.status = d.status==='Achieved' ? 'Developing' : 'Developing';
+    }
+  }
+};
+
+/* ============================== BULK PASTE IMPORT ============================== */
+const BulkImport = {
+  FIELD_COUNT: 10,
+  FIELD_COUNT_WITH_PRONUNCIATION: 11,
+  parseLine(line){
+    const parts = line.split('|').map(s=>s.trim());
+    if(parts.length !== this.FIELD_COUNT && parts.length !== this.FIELD_COUNT_WITH_PRONUNCIATION){
+      throw new Error('Expected ' + this.FIELD_COUNT + ' fields (or ' + this.FIELD_COUNT_WITH_PRONUNCIATION + ' with an optional trailing Pronunciation field) separated by "|", found ' + parts.length + '.');
+    }
+    const [word, meaning, form, grammar, collocRaw, contrast, contextsRaw, production, mnemonic, clozeRaw, pronunciationRaw] = parts;
+    const splitSemi = s => s.split(';').map(x=>x.trim()).filter(Boolean);
+    const collocations = splitSemi(collocRaw);
+    const contexts = splitSemi(contextsRaw);
+    const cloze = splitSemi(clozeRaw);
+    const pronunciation = (pronunciationRaw||'').trim();
+
+    if(!word) throw new Error('Word is missing.');
+    if(!meaning) throw new Error('Core Meaning is missing.');
+    if(!form) throw new Error('Form is missing.');
+    if(!grammar) throw new Error('Grammar is missing.');
+    if(collocations.length<2) throw new Error('At least 2 collocations required (separate with ";").');
+    if(!contrast) throw new Error('Contrast is missing.');
+    if(contexts.length<2) throw new Error('At least 2 typical contexts required (separate with ";").');
+    if(!production) throw new Error('Production sentence is missing.');
+
+    return { word, meaning, form, grammar, collocations, contrast, contexts, production, mnemonic: mnemonic||'', cloze, pronunciation };
+  }
+};
+
+/* ============================== STORAGE ============================== */
+const STORAGE_KEY = 'coreVocabTrainer.v1';
+const STORAGE_BACKUP_KEY = 'coreVocabTrainer.v1.corrupted_backup';
+
+function defaultState(){
+  return {
+    version: 1,
+    words: [],
+    errorLog: [], // {ts, wordId, word, category, level}
+    settings: { examDate: null, theme: 'system' },
+    sessionLog: [], // {ts, summary}
+    writingLog: [], // {ts, date, text, errors:[{quoted,word,wordId,category,correction,matched}]}
+    examLog: [], // {ts, date, prompt, minutes, text, targetWords:[{word,wordId,outcome,category}]}
+    practiceSession: null // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
+  };
+}
+
+function validateAndRepair(raw){
+  const base = defaultState();
+  if(!raw || typeof raw !== 'object') return base;
+  const out = base;
+  if(Array.isArray(raw.words)){
+    out.words = raw.words.filter(w=>w && typeof w==='object' && w.word).map(repairWord);
+  }
+  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category));
+  if(raw.settings && typeof raw.settings==='object'){
+    out.settings.examDate = typeof raw.settings.examDate==='string' ? raw.settings.examDate : null;
+    out.settings.theme = ['system','light','dark'].includes(raw.settings.theme) ? raw.settings.theme : 'system';
+  }
+  if(Array.isArray(raw.sessionLog)) out.sessionLog = raw.sessionLog.filter(s=>s && s.ts);
+  if(Array.isArray(raw.writingLog)) out.writingLog = raw.writingLog.filter(s=>s && s.ts);
+  if(Array.isArray(raw.examLog)) out.examLog = raw.examLog.filter(s=>s && s.ts);
+  if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
+    out.practiceSession = raw.practiceSession;
+  }
+  return out;
+}
+
+function repairWord(w){
+  const d = {
+    id: w.id || Utils.uid(),
+    word: String(w.word||'').trim(),
+    meaning: String(w.meaning||'').trim(),
+    form: String(w.form||'').trim(),
+    grammar: String(w.grammar||'').trim(),
+    collocations: Array.isArray(w.collocations) ? w.collocations.filter(Boolean) : [],
+    contrast: String(w.contrast||'').trim(),
+    contexts: Array.isArray(w.contexts) ? w.contexts.filter(Boolean) : [],
+    production: String(w.production||'').trim(),
+    mnemonic: String(w.mnemonic||'').trim(),
+    pronunciation: String(w.pronunciation||'').trim(),
+    cloze: Array.isArray(w.cloze) ? w.cloze.filter(Boolean) : [],
+    created: w.created || Utils.todayISO(),
+    srs: w.srs && typeof w.srs==='object' ? {
+      interval: Number(w.srs.interval)||1,
+      nextReview: w.srs.nextReview || Utils.todayISO(),
+      easeStreak: Number(w.srs.easeStreak)||0,
+      lastPracticed: w.srs.lastPracticed || null
+    } : { interval:1, nextReview: Utils.todayISO(), easeStreak:0, lastPracticed:null },
+    levelState: w.levelState && typeof w.levelState==='object' ? { level: Utils.clamp(Number(w.levelState.level)||2,1,4) } : { level:2 },
+    history: Array.isArray(w.history) ? w.history.filter(h=>h && typeof h==='object') : [],
+    errorCounts: w.errorCounts && typeof w.errorCounts==='object' ? w.errorCounts : {},
+    lastClozeIndex: typeof w.lastClozeIndex==='number' ? w.lastClozeIndex : -1,
+    wordType: WORD_TYPES.some(t=>t.key===w.wordType) ? w.wordType : 'general',
+    dims: repairDims(w.dims),
+    teaching: (w.teaching && typeof w.teaching==='object') ? {
+      completed: !!w.teaching.completed,
+      currentStep: Utils.clamp(Number(w.teaching.currentStep)||1, 1, 8),
+      errorHistory: Array.isArray(w.teaching.errorHistory) ? w.teaching.errorHistory : [],
+      stepResults: (w.teaching.stepResults && typeof w.teaching.stepResults==='object') ? w.teaching.stepResults : {}
+    } : { completed: (w.history && w.history.length>0) || false, currentStep: 8, errorHistory: [], stepResults: {} }
+  };
+  return d;
+}
+
+const Storage = {
+  state: null,
+  load(){
+    let raw = null;
+    try{
+      const txt = localStorage.getItem(STORAGE_KEY);
+      if(txt) raw = JSON.parse(txt);
+    }catch(e){
+      try{ localStorage.setItem(STORAGE_BACKUP_KEY, localStorage.getItem(STORAGE_KEY)||''); }catch(e2){}
+      Utils.toast('Saved data was corrupted — started fresh (old data backed up).', 4000);
+      raw = null;
+    }
+    this.state = validateAndRepair(raw);
+    this.save();
+  },
+  save(){
+    try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); }
+    catch(e){ Utils.toast('Could not save — storage may be full.'); }
+  },
+  exportJSON(){
+    const blob = new Blob([JSON.stringify(this.state,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'vocab-trainer-backup-'+Utils.todayISO()+'.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  },
+  importJSON(text, mode){
+    let parsed;
+    try{ parsed = JSON.parse(text); }
+    catch(e){ Utils.toast('Import failed: invalid JSON.'); return false; }
+    const incoming = validateAndRepair(parsed);
+    if(incoming.words.length===0 && (!parsed.words || parsed.words.length===0)){
+      Utils.toast('Import failed: no valid words found in file.'); return false;
+    }
+    if(mode==='replace'){
+      this.state = incoming;
+    } else {
+      const existingIds = new Set(this.state.words.map(w=>w.id));
+      const merged = this.state.words.slice();
+      incoming.words.forEach(w=>{ if(!existingIds.has(w.id)) merged.push(w); });
+      this.state.words = merged;
+      this.state.errorLog = this.state.errorLog.concat(incoming.errorLog);
+      if(incoming.settings.examDate) this.state.settings.examDate = incoming.settings.examDate;
+    }
+    this.save();
+    return true;
+  }
+};
+
+/* ============================== WORD MODEL / SRS / MASTERY ============================== */
+const WordModel = {
+  create(fields){
+    return {
+      id: Utils.uid(),
+      word: fields.word.trim(),
+      meaning: fields.meaning.trim(),
+      form: fields.form.trim(),
+      grammar: fields.grammar.trim(),
+      collocations: fields.collocations,
+      contrast: fields.contrast.trim(),
+      contexts: fields.contexts,
+      production: fields.production.trim(),
+      mnemonic: (fields.mnemonic||'').trim(),
+      pronunciation: (fields.pronunciation||'').trim(),
+      cloze: fields.cloze,
+      created: Utils.todayISO(),
+      srs: { interval: 1, nextReview: Utils.todayISO(), easeStreak: 0, lastPracticed: null },
+      levelState: { level: 2 },
+      history: [],
+      errorCounts: {},
+      lastClozeIndex: -1,
+      wordType: WORD_TYPES.some(t=>t.key===fields.wordType) ? fields.wordType : 'general',
+      dims: freshDims(),
+      teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }
+    };
+  },
+
+  blank(sentence, word){
+    const esc = Utils.escapeRegex(word);
+    const wb = new RegExp('\\b'+esc+'\\b','i');
+    if(wb.test(sentence)){
+      const answer = sentence.match(wb)[0];
+      return { display: sentence.replace(wb, '_____'), answer };
+    }
+    // fallback: try to find an inflected token sharing the first 4 chars
+    const stem = word.slice(0, Math.min(4, word.length)).toLowerCase();
+    const tokens = sentence.match(/[A-Za-z']+/g) || [];
+    const match = tokens.find(t => t.length>=stem.length && t.toLowerCase().startsWith(stem));
+    if(match){
+      const tokRe = new RegExp('\\b'+Utils.escapeRegex(match)+'\\b');
+      return { display: sentence.replace(tokRe, '_____'), answer: match };
+    }
+    return null;
+  },
+
+  // Display-only masking for hint surfaces (mnemonics, collocation cues, drill
+  // sentences) — NOT used for Cloze grading, which needs blank()'s strict
+  // one-blank/one-gradable-answer contract. Unlike blank(), this also catches a
+  // multi-word target phrase (e.g. "morally compromised") when only one of its
+  // component words appears (e.g. a mnemonic that just says "Compromised = ..."),
+  // and tolerates inflected endings via a short stem match.
+  maskWord(text, word){
+    if(!text || !word) return text;
+    let masked = text.replace(new RegExp('\\b'+Utils.escapeRegex(word)+'\\b','ig'), '_____');
+    const stopwords = new Set(['a','an','the','of','to','in','on','for','and','or','is','was','be','been','its',"it's",'his','her','their']);
+    word.split(/\s+/).filter(p=>p.length>=3 && !stopwords.has(p.toLowerCase())).forEach(p=>{
+      const stem = Utils.escapeRegex(p.slice(0, Math.min(6, p.length)));
+      masked = masked.replace(new RegExp('\\b'+stem+"[a-z']*",'ig'), '_____');
+    });
+    return masked;
+  },
+
+  getClozeSentence(word){
+    let candidates = word.cloze.length ? word.cloze.slice() : [];
+    if(!candidates.length){
+      if(word.production) candidates = [word.production];
+    }
+    if(!candidates.length) return null;
+    let idx;
+    if(candidates.length===1) idx = 0;
+    else {
+      do { idx = Math.floor(Math.random()*candidates.length); } while(idx === word.lastClozeIndex && candidates.length>1);
+    }
+    word.lastClozeIndex = idx;
+    const sentence = candidates[idx];
+    const blanked = this.blank(sentence, word.word);
+    if(blanked) return blanked;
+    // sentence may already have been authored with a blank placeholder (e.g. "___")
+    if(/_{2,}/.test(sentence)){
+      return { display: sentence.replace(/_{2,}/, '_____'), answer: word.word };
+    }
+    // can't safely blank the word out of this sentence without revealing it — bail out,
+    // caller (genCloze) falls back to a cued-recall prompt instead
+    return null;
+  },
+
+  logAttempt(word, level, correct, meta){
+    word.history.push(Object.assign({ ts: Date.now(), date: Utils.todayISO(), level, correct }, meta||{}));
+    if(word.history.length>200) word.history = word.history.slice(-200);
+  },
+
+  logError(word, category, level){
+    word.errorCounts[category] = (word.errorCounts[category]||0)+1;
+    Storage.state.errorLog.push({ ts: Date.now(), date: Utils.todayISO(), wordId: word.id, word: word.word, category, level });
+    const dimKey = CATEGORY_TO_DIM[category];
+    if(dimKey) DimModel.record(word, dimKey, false);
+  },
+
+  updateLadder(word, level, correct){
+    const last5 = word.history.slice(-5);
+    const rate = last5.length ? last5.filter(h=>h.correct).length/last5.length : 1;
+    if(last5.length>=3 && rate<0.5){
+      word.levelState.level = Math.max(2, word.levelState.level-1);
+      return;
+    }
+    if(correct){
+      const recentAtLevel = word.history.filter(h=>h.level===level).slice(-2);
+      if(recentAtLevel.length>=2 && recentAtLevel.every(h=>h.correct) && level===word.levelState.level && word.levelState.level<4){
+        word.levelState.level = Math.min(4, word.levelState.level+1);
+      }
+    }
+  },
+
+  applyRating(word, rating){
+    const prev = word.srs.interval || 1;
+    let interval;
+    if(rating==='again'){ interval = 1; word.srs.easeStreak = 0; }
+    else if(rating==='hard'){ interval = Utils.clamp(Math.round(prev*0.75)||1, 1, 2); word.srs.easeStreak = 0; }
+    else { interval = Utils.clamp(Math.round(prev*1.75), 2, 30); word.srs.easeStreak = (word.srs.easeStreak||0)+1; }
+
+    let nextReview = Utils.addDays(Utils.todayISO(), interval);
+    const examDate = Storage.state.settings.examDate;
+    if(examDate && examDate >= Utils.todayISO()){
+      const stage = this.computeMastery(word);
+      if(stage!=='Exam Ready' && nextReview > examDate){
+        const daysToExam = Utils.diffDays(Utils.todayISO(), examDate);
+        if(daysToExam>0){
+          interval = Utils.clamp(Math.min(interval, Math.ceil(daysToExam/2)), 1, 30);
+          nextReview = Utils.addDays(Utils.todayISO(), interval);
+        }
+      }
+    }
+    word.srs.interval = interval;
+    word.srs.nextReview = nextReview;
+    word.srs.lastPracticed = Utils.todayISO();
+  },
+
+  mnemonicFaded(word){
+    return (word.srs.easeStreak||0) >= 4 && !!word.mnemonic;
+  },
+
+  computeMastery(word){
+    const h = word.history;
+    if(!word.teaching || !word.teaching.completed) return 'New';
+    if(h.length===0) return 'New';
+    const rh = h.filter(a=>a.phase!=='teaching');
+    if(rh.length===0) return 'Learning';
+    const last5 = rh.slice(-5);
+    const last5Rate = last5.filter(a=>a.correct).length/last5.length;
+    const hasRecentFail = last5.some(a=>!a.correct);
+    const last3 = rh.slice(-3);
+    const noRecentErrors = last3.length>=3 && last3.every(a=>a.correct);
+    const dims = word.dims || {};
+    const indepOk = dims.independentProduction && dims.independentProduction.success>=2;
+    const novelOk = dims.novelApplication && dims.novelApplication.success>=1;
+    const examReady = !!(indepOk && novelOk && noRecentErrors);
+    const strong = last5Rate>=0.8 && !hasRecentFail && word.levelState.level>=3 && word.srs.interval>=10;
+    if(examReady){
+      const examDate = Storage.state.settings.examDate;
+      if(!examDate) return 'Exam Ready';
+      return (word.srs.nextReview && word.srs.nextReview<=examDate) ? 'Exam Ready' : 'Stable';
+    }
+    if(strong) return 'Stable';
+    if(rh.length<3 || word.levelState.level<=2) return 'Learning';
+    if(last5Rate<0.6 || hasRecentFail) return 'Unstable';
+    return 'Learning';
+  },
+
+  isOverdue(word){ return word.history.length>0 && word.srs.nextReview < Utils.todayISO(); },
+  isDueToday(word){ return word.history.length>0 && word.srs.nextReview === Utils.todayISO(); },
+  isNew(word){ return word.history.length===0; },
+
+  findByText(text){
+    const norm = Utils.normalize(text);
+    if(!norm) return null;
+    return Storage.state.words.find(w=>Utils.normalize(w.word)===norm) || null;
+  },
+
+  hasRecentError(word, days){
+    days = days==null ? 7 : days;
+    return Storage.state.errorLog.some(e=>e.wordId===word.id && Utils.diffDays(e.date, Utils.todayISO())<=days);
+  },
+
+  resetDim(word, dimKey){
+    if(word.dims && word.dims[dimKey]) word.dims[dimKey] = { status:'Not assessed', success:0, fail:0 };
+  }
+};
+
+/* ============================== WRITING ERROR INTEGRATION ==============================
+   Shared bridge used by the Weekly Writing Audit and Timed Exam Deployment modules so
+   they reuse the same error-diagnosis system / mastery dimensions as the Teaching Phase
+   and Practice Engine, rather than keeping a separate error model. */
+const ErrorIntegration = {
+  /* Records a production-context vocabulary error found outside normal practice
+     (a writing audit tag, or an exam "used incorrectly" mark), and schedules the
+     word for targeted retrieval by resetting its production dimensions and pulling
+     it into today's due queue. */
+  recordProductionError(word, category, source){
+    WordModel.logError(word, category, 4);
+    WordModel.logAttempt(word, 4, false, { phase: source||'writing', errorCategory: category });
+    WordModel.resetDim(word, 'independentProduction');
+    WordModel.resetDim(word, 'novelApplication');
+    word.srs.interval = 1;
+    word.srs.nextReview = Utils.todayISO();
+    word.levelState.level = Utils.clamp(word.levelState.level, 2, 3);
+  },
+  /* Records a confirmed-correct production-context usage (exam "used correctly"). */
+  recordProductionSuccess(word, source){
+    WordModel.logAttempt(word, 4, true, { phase: source||'writing' });
+    WordModel.updateLadder(word, 4, true);
+    WordModel.applyRating(word, 'easy');
+    DimModel.record(word, 'independentProduction', true);
+    DimModel.record(word, 'novelApplication', true);
+  }
+};
+
+/* ============================== PRACTICE ENGINE ============================== */
+const DRILL_TYPES = ['combo','confusable','rewrite'];
+
+const Practice = {
+  session: null, // {queue:[{word,level,drillType}], idx, results:[], hintUsed, mode, phase}
+
+  buildDueQueue(opts){
+    opts = opts || {};
+    const words = Storage.state.words;
+    let pool = words.filter(w=>w.teaching && w.teaching.completed);
+    if(opts.category) pool = pool.filter(w => (w.errorCounts[opts.category]||0) > 0);
+    // Group by SRS priority (overdue first, then recently-failed, then due-today), but
+    // shuffle within each group so the word order isn't the same every session — only
+    // the exact due date should break ties, not each word's position in the word list.
+    const overdue = Utils.shuffle(pool.filter(w=>WordModel.isOverdue(w))).sort((a,b)=>a.srs.nextReview.localeCompare(b.srs.nextReview));
+    const failedRecent = Utils.shuffle(pool.filter(w=>{
+      const last = w.history[w.history.length-1];
+      return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1 && !overdue.includes(w);
+    }));
+    const dueToday = Utils.shuffle(pool.filter(w=>WordModel.isDueToday(w) && !overdue.includes(w) && !failedRecent.includes(w)));
+    let queue = overdue.concat(failedRecent, dueToday);
+    if(opts.includeNew){
+      const newWords = Utils.shuffle(pool.filter(w=>WordModel.isNew(w)));
+      queue = queue.concat(newWords.slice(0, opts.newLimit==null?newWords.length:opts.newLimit));
+    }
+    // dedupe
+    const seen = new Set();
+    queue = queue.filter(w=>{ if(seen.has(w.id)) return false; seen.add(w.id); return true; });
+    return queue.map(w=>({ word:w, level: opts.category ? Math.max(2, w.levelState.level-1) : w.levelState.level }));
+  },
+
+  buildProductionQueue(limit){
+    const today = Utils.todayISO();
+    const eligible = Storage.state.words.filter(w=>w.teaching && w.teaching.completed && w.history.length>0 &&
+      !w.history.some(h=>h.date===today && h.level===4));
+    const shuffled = Utils.shuffle(eligible);
+    return shuffled.slice(0, limit||8).map(w=>({ word:w, level:4, drillType: Utils.pick(DRILL_TYPES) }));
+  },
+
+  generateQuestion(item){
+    const word = item.word;
+    const level = item.level;
+    if(item.drillType) return this.generateDrill(item);
+    if(level<=1) return this.genRecognition(word);
+    if(level===2) return this.genCuedRecall(word);
+    if(level===3) return this.genCloze(word);
+    return this.genProduction(word);
+  },
+
+  genRecognition(word){
+    const others = Storage.state.words.filter(w=>w.id!==word.id && w.meaning);
+    const distractors = Utils.shuffle(others).slice(0,3).map(w=>w.meaning);
+    const options = Utils.shuffle([word.meaning, ...distractors]);
+    return { type:'recognition', word, level:1, promptTitle:'Warm-up: choose the meaning', prompt: word.word,
+      options, correctAnswer: word.meaning, autoGrade:true };
+  },
+
+  genCuedRecall(word){
+    const meaning = (word.meaning||'').trim();
+    const contexts = (word.contexts||[]).map(c=>(c||'').trim()).filter(Boolean);
+    const collocations = (word.collocations||[]).map(c=>(c||'').trim()).filter(Boolean);
+
+    const variants = [];
+    if(meaning) variants.push('Meaning: ' + meaning);
+    if(contexts.length) variants.push('Context: ' + WordModel.maskWord(Utils.pick(contexts), word.word) + (meaning ? '  (Meaning: ' + meaning + ')' : ''));
+    if(collocations.length && meaning){
+      const masked = WordModel.maskWord(Utils.pick(collocations), word.word);
+      variants.push('It often appears with "' + masked + '". Meaning: ' + meaning);
+    }
+
+    const cue = variants.length ? Utils.pick(variants) : 'No stored definition or context for this word yet — type the word from memory.';
+    return { type:'cued', word, level:2, promptTitle:'Type the word', prompt: cue, correctAnswer: word.word, autoGrade:true };
+  },
+
+  genCloze(word){
+    const c = WordModel.getClozeSentence(word);
+    if(!c) return this.genCuedRecall(word);
+    return { type:'cloze', word, level:3, promptTitle:'Fill in the blank', prompt: c.display, correctAnswer: c.answer, autoGrade:true };
+  },
+
+  genProduction(word){
+    const meaning = (word.meaning||'').trim();
+    const contexts = (word.contexts||[]).map(c=>(c||'').trim()).filter(Boolean);
+    const collocations = (word.collocations||[]).map(c=>(c||'').trim()).filter(Boolean);
+    const topic = WordModel.maskWord(contexts.length ? Utils.pick(contexts) : meaning, word.word);
+
+    const twists = [
+      'Write an original sentence using the target word.',
+      'Write it as a question.',
+      'Use a more formal register than usual.',
+      'Use it in a casual, spoken-style sentence.'
+    ];
+    if(collocations.length){
+      const maskedColloc = WordModel.maskWord(Utils.pick(collocations), word.word);
+      twists.push('Try to naturally work in the pattern "'+maskedColloc+'".');
+    }
+    const twist = Utils.pick(twists);
+    return { type:'production', word, level:4, promptTitle:'Free production', prompt: 'Situation: ' + topic,
+      sub: twist, meaningHint: meaning, autoGrade:false };
+  },
+
+  generateDrill(item){
+    const word = item.word;
+    const type = item.drillType;
+    const meaningHint = (word.meaning||'').trim();
+    if(type==='combo'){
+      const others = Storage.state.words.filter(w=>w.id!==word.id && w.history.length>0);
+      const partner = others.length ? Utils.pick(others) : null;
+      if(!partner) return this.genProduction(word);
+      return { type:'drill', drillType:'combo', word, partner, level:4, promptTitle:'Combine two words',
+        prompt: 'Write ONE natural sentence using both the target word and "'+partner.word+'".', meaningHint, autoGrade:false };
+    }
+    if(type==='confusable' && word.contrast){
+      return { type:'drill', drillType:'confusable', word, level:4, promptTitle:'Distinguish confusables',
+        prompt: 'Contrast: ' + WordModel.maskWord(word.contrast, word.word), sub: 'Write one or two sentences that clearly show the difference, using the target word.', meaningHint, autoGrade:false };
+    }
+    if(type==='rewrite' && word.production){
+      const original = WordModel.maskWord(word.production, word.word);
+      return { type:'drill', drillType:'rewrite', word, level:4, promptTitle:'Rewrite in a new register',
+        prompt: 'Original: "' + original + '"', sub:'Rewrite the same idea using the target word in a different register or context.', meaningHint, autoGrade:false };
+    }
+    return this.genProduction(word);
+  },
+
+  grade(question, userInput){
+    if(!question.autoGrade) return null;
+    if(question.type==='recognition') return userInput === question.correctAnswer;
+    const norm = Utils.normalize(userInput);
+    const target = Utils.normalize(question.correctAnswer);
+    if(norm===target) return true;
+    return false;
+  },
+
+  /* View-only navigation to a previously graded card. Never mutates SRS state —
+     it only points the renderer at the already-graded result for idx-1 and
+     remembers where to snap back to. Refuses to move if the previous slot has no
+     graded result yet (an ungraded card can never be reached this way). */
+  canGoBack(){
+    const s = this.session;
+    if(!s || s.idx<=0) return false;
+    return s.results.some(r=>r.idx===s.idx-1);
+  },
+  goBack(){
+    const s = this.session;
+    if(!this.canGoBack()) return;
+    s.savedIdx = s.idx;
+    s.idx = s.idx-1;
+    s.reviewing = true;
+  },
+  returnToCurrent(){
+    const s = this.session;
+    if(!s || !s.reviewing) return;
+    s.idx = s.savedIdx!=null ? s.savedIdx : s.idx+1;
+    s.reviewing = false;
+    s.savedIdx = null;
+  },
+
+  /* ---- Session persistence (survive a page refresh mid-practice) ----
+     Practice.session holds live word object references, which can't go through
+     JSON.stringify as-is (circular-ish, and would duplicate the whole word into
+     Storage). persist() swaps those for word ids before saving into
+     Storage.state.practiceSession; restore() looks the ids back up against the
+     current word list on load. If a referenced word was deleted in the meantime
+     it's silently dropped from the resumed queue rather than crashing. */
+  serializeQuestion(q){
+    if(!q) return null;
+    const copy = Object.assign({}, q);
+    copy.wordId = copy.word ? copy.word.id : null; delete copy.word;
+    if(copy.partner){ copy.partnerId = copy.partner.id; delete copy.partner; }
+    return copy;
+  },
+  deserializeQuestion(sq){
+    if(!sq) return null;
+    const copy = Object.assign({}, sq);
+    copy.word = Storage.state.words.find(w=>w.id===copy.wordId) || null;
+    delete copy.wordId;
+    if(copy.partnerId){ copy.partner = Storage.state.words.find(w=>w.id===copy.partnerId) || null; delete copy.partnerId; }
+    return copy.word ? copy : null;
+  },
+  persist(){
+    if(!this.session){ this.clearPersisted(); return; }
+    const s = this.session;
+    Storage.state.practiceSession = {
+      mode: s.mode,
+      idx: s.idx,
+      reviewing: !!s.reviewing,
+      savedIdx: s.savedIdx==null ? null : s.savedIdx,
+      queue: s.queue.map(item=>({ wordId: item.word.id, level: item.level, drillType: item.drillType||null })),
+      results: s.results.map(r=>({
+        idx: r.idx, wordId: r.word.id, userVal: r.userVal, correct: r.correct,
+        rating: r.rating||null, category: r.category||null, question: this.serializeQuestion(r.question)
+      }))
+    };
+    Storage.save();
+  },
+  clearPersisted(){
+    if(Storage.state.practiceSession){ Storage.state.practiceSession = null; Storage.save(); }
+  },
+  restore(){
+    const saved = Storage.state.practiceSession;
+    if(!saved) return;
+    const queue = saved.queue.map(item=>{
+      const word = Storage.state.words.find(w=>w.id===item.wordId);
+      return word ? { word, level: item.level, drillType: item.drillType||undefined } : null;
+    }).filter(Boolean);
+    if(!queue.length){ this.clearPersisted(); return; }
+    const results = (saved.results||[]).map(r=>{
+      const word = Storage.state.words.find(w=>w.id===r.wordId);
+      if(!word) return null;
+      return { idx:r.idx, word, question:this.deserializeQuestion(r.question), userVal:r.userVal, correct:r.correct, rating:r.rating, category:r.category };
+    }).filter(Boolean);
+    this.session = {
+      queue, results, mode: saved.mode,
+      idx: Utils.clamp(saved.idx, 0, queue.length),
+      reviewing: !!saved.reviewing,
+      savedIdx: saved.savedIdx
+    };
+  }
+};
+
+/* ============================== APP STATE / ROUTER ============================== */
+const App = {
+  currentTab: 'dashboard',
+  practiceState: null,
+
+  init(){
+    Storage.load();
+    this.applyTheme();
+    Practice.restore();
+    document.getElementById('tabs').addEventListener('click', (e)=>{
+      const btn = e.target.closest('button[data-tab]');
+      if(btn) this.showTab(btn.dataset.tab);
+    });
+    document.getElementById('app').addEventListener('click', (e)=>{
+      const btn = e.target.closest('.speak-btn');
+      if(btn) Speech.speak(btn.dataset.word);
+    });
+    this.showTab(Practice.session ? 'practice' : 'dashboard');
+  },
+
+  updateDueBadge(){
+    const el = document.getElementById('dueBadge');
+    if(!el) return;
+    const words = Storage.state.words;
+    const overdue = words.filter(w=>WordModel.isOverdue(w)).length;
+    const dueToday = words.filter(w=>WordModel.isDueToday(w)).length;
+    const total = overdue + dueToday;
+    el.textContent = total + (total===1 ? ' word due today' : ' words due today');
+  },
+
+  applyTheme(){
+    const t = Storage.state.settings.theme;
+    if(t==='system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', t);
+  },
+  cycleTheme(){
+    const order = ['system','light','dark'];
+    const i = order.indexOf(Storage.state.settings.theme);
+    Storage.state.settings.theme = order[(i+1)%order.length];
+    Storage.save(); this.applyTheme();
+    Utils.toast('Theme: ' + Storage.state.settings.theme);
+  },
+
+  showTab(tab){
+    this.currentTab = tab;
+    document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.getElementById('view-'+tab).classList.add('active');
+    this.updateDueBadge();
+    if(tab==='dashboard') Views.renderDashboard();
+    else if(tab==='practice') Views.renderPracticeHome();
+    else if(tab==='add') Views.renderAddForm();
+    else if(tab==='bank') Views.renderBank();
+    else if(tab==='errors') Views.renderErrors();
+    else if(tab==='writing') Views.renderWriting();
+    else if(tab==='analytics') Analytics.render();
+    else if(tab==='settings') Views.renderSettings();
+  }
+};
+
+/* ============================== VIEWS ============================== */
+const Views = {
+
+  /* ---------- DASHBOARD ---------- */
+  renderDashboard(){
+    const words = Storage.state.words;
+    const el = document.getElementById('view-dashboard');
+    if(words.length===0){
+      el.innerHTML = '<div class="card empty-state"><div class="big">📚</div><h2>No words yet</h2>' +
+        '<p>Add your first word to start building real, production-level vocabulary knowledge.</p>' +
+        '<button class="btn primary" id="goAddBtn">Add a Word</button></div>';
+      el.querySelector('#goAddBtn').addEventListener('click', ()=>App.showTab('add'));
+      return;
+    }
+    const overdue = words.filter(w=>WordModel.isOverdue(w));
+    const dueToday = words.filter(w=>WordModel.isDueToday(w));
+    const awaitingTeaching = words.filter(w=>!w.teaching || !w.teaching.completed);
+    const stages = { New:0, Learning:0, Unstable:0, Stable:0, 'Exam Ready':0 };
+    words.forEach(w=> stages[WordModel.computeMastery(w)]++ );
+    const recentlyFailed = words.filter(w=>{
+      const last = w.history[w.history.length-1];
+      return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1;
+    });
+    const catTotals = {};
+    ERROR_CATEGORIES.forEach(c=>catTotals[c]=0);
+    Storage.state.errorLog.forEach(e=>{ if(catTotals[e.category]!=null) catTotals[e.category]++; });
+    const weakest = Object.entries(catTotals).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]).slice(0,3);
+    const levelDist = {1:0,2:0,3:0,4:0};
+    words.forEach(w=> levelDist[w.levelState.level]++ );
+    const examDate = Storage.state.settings.examDate;
+
+    let html = '';
+    if(overdue.length>15){
+      html += '<div class="banner warn">⚠️ Reduce new-word intake until the review queue is clear. You have ' + overdue.length + ' overdue words.</div>';
+    }
+    if(examDate){
+      const days = Utils.diffDays(Utils.todayISO(), examDate);
+      html += '<div class="banner ' + (days<=3?'bad':'info') + '">🎯 Exam in ' + (days<0?'the past':days+' day'+(days===1?'':'s')) + ' (' + Utils.fmtDate(examDate) + ') — ' + stages['Exam Ready'] + ' word(s) exam-ready.</div>';
+    }
+
+    html += '<div class="card"><h2>Today</h2><div class="grid">' +
+      stat(overdue.length, 'Overdue', overdue.length>0?'bad':'') +
+      stat(dueToday.length, 'Due Today', '') +
+      stat(awaitingTeaching.length, 'Awaiting Teaching', awaitingTeaching.length>0?'warn':'') +
+      stat(recentlyFailed.length, 'Recently Failed', recentlyFailed.length>0?'warn':'') +
+      '</div></div>';
+
+    if(awaitingTeaching.length){
+      html += '<div class="banner info">📖 '+awaitingTeaching.length+' word(s) are saved but have not been taught yet — they will not appear in retrieval practice until the Teaching Phase is complete. <button class="small-link" id="teachNowBtn" style="margin-left:6px;">Teach now →</button></div>';
+    }
+
+    html += '<div class="card"><div class="btn-row">' +
+      '<button class="btn primary" id="startDailyBtn">▶ Start Daily Session</button>' +
+      '<button class="btn ghost" id="quickDueBtn">Quick Review (Due Only)</button>' +
+      '<button class="btn ghost" id="addWordBtn2">＋ Add Word</button>' +
+      '</div></div>';
+
+    html += '<div class="card"><h2>Mastery Stages</h2><div class="grid">' +
+      Object.entries(stages).map(([k,v])=>'<div class="stat"><div class="num">'+v+'</div><div class="label">'+k+'</div></div>').join('') +
+      '</div></div>';
+
+    html += '<div class="card"><h2>Retrieval-Level Progress</h2>' +
+      [1,2,3,4].map(l=>{
+        const label = ['','Recognition','Cued Recall','Cloze','Free Production'][l];
+        const pct = words.length ? Math.round(levelDist[l]/words.length*100) : 0;
+        return '<div class="bar-row"><div style="width:120px;color:var(--text-dim)">'+label+'</div><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%"></div></div><div style="width:34px;text-align:right">'+levelDist[l]+'</div></div>';
+      }).join('') + '</div>';
+
+    const taughtWords = words.filter(w=>w.teaching && w.teaching.completed);
+    if(taughtWords.length){
+      html += '<div class="card"><h2>Skill Dimension Coverage</h2><p class="field-hint">Across '+taughtWords.length+' taught word(s) — recognition alone is never counted as mastery.</p><div class="dim-grid">' +
+        DIMENSIONS.map(d=>{
+          const counts = {Achieved:0, Developing:0, 'Not assessed':0};
+          taughtWords.forEach(w=>{ const st = w.dims && w.dims[d.key] ? w.dims[d.key].status : 'Not assessed'; counts[st]++; });
+          const total = taughtWords.length;
+          const pct = s => total ? Math.round(counts[s]/total*100) : 0;
+          return '<div class="dim-item"><div class="name">'+d.label+'</div>' +
+            '<div class="track">' +
+            '<div class="seg" style="width:'+pct('Achieved')+'%;background:var(--good);"></div>' +
+            '<div class="seg" style="width:'+pct('Developing')+'%;background:var(--warn);"></div>' +
+            '<div class="seg" style="width:'+pct('Not assessed')+'%;background:var(--border);"></div>' +
+            '</div>' +
+            '<div class="field-hint" style="margin-top:4px;">'+counts.Achieved+' achieved · '+counts.Developing+' developing</div>' +
+            '</div>';
+        }).join('') + '</div></div>';
+    }
+
+    if(weakest.length){
+      html += '<div class="card"><h2>Weakest Error Categories</h2>' +
+        weakest.map(([c,v])=>'<div class="bar-row"><div style="width:120px">'+c+'</div><div class="bar-track"><div class="bar-fill" style="background:var(--bad);width:'+Math.min(100,v*8)+'%"></div></div><div style="width:34px;text-align:right">'+v+'</div></div>').join('') +
+        '<button class="small-link" id="goErrorsBtn" style="margin-top:8px;">Review by error category →</button></div>';
+    }
+
+    const upcoming = words.filter(w=>w.history.length>0 && w.srs.nextReview>=Utils.todayISO())
+      .sort((a,b)=>a.srs.nextReview.localeCompare(b.srs.nextReview)).slice(0,8);
+    if(upcoming.length){
+      html += '<div class="card"><h2>Upcoming Reviews</h2>' +
+        upcoming.map(w=>'<div class="word-row"><div><div class="w">'+Utils.escapeHtml(w.word)+'</div><div class="meta">'+Utils.fmtDate(w.srs.nextReview)+' · interval '+w.srs.interval+'d</div></div><span class="badge '+WordModel.computeMastery(w).replace(' ','')+'">'+WordModel.computeMastery(w)+'</span></div>').join('') +
+        '</div>';
+    }
+
+    el.innerHTML = html;
+    el.querySelector('#startDailyBtn').addEventListener('click', ()=>Session.start());
+    el.querySelector('#quickDueBtn').addEventListener('click', ()=>{ App.showTab('practice'); Views.runFreePractice({includeNew:false}); });
+    el.querySelector('#addWordBtn2').addEventListener('click', ()=>App.showTab('add'));
+    const goErr = el.querySelector('#goErrorsBtn');
+    if(goErr) goErr.addEventListener('click', ()=>App.showTab('errors'));
+    const teachNowBtn = el.querySelector('#teachNowBtn');
+    if(teachNowBtn) teachNowBtn.addEventListener('click', ()=>Teaching.startQueue(awaitingTeaching, ()=>App.showTab('dashboard')));
+
+    function stat(n,label,cls){ return '<div class="stat '+(cls||'')+'"><div class="num">'+n+'</div><div class="label">'+label+'</div></div>'; }
+  },
+
+  /* ---------- ADD WORD ---------- */
+  renderAddForm(prefill, existingRef){
+    const el = document.getElementById('view-add');
+    const w = prefill || existingRef || null;
+    const isEditing = !!existingRef;
+
+    const subtabNav = isEditing ? '' :
+      '<div class="btn-row" style="margin-bottom:16px;">' +
+        '<button type="button" class="btn primary small" id="subtabManualBtn">✏️ Manual Entry</button>' +
+        '<button type="button" class="btn ghost small" id="subtabPasteBtn">📋 Paste Import</button>' +
+      '</div>';
+
+    const manualHtml =
+      '<h2>' + (isEditing?'Edit Word':'Production Record — New Word') + '</h2>' +
+      '<form id="wordForm">' +
+        field('Word', 'word', w?w.word:'', true) +
+        field('Pronunciation', 'pronunciation', w?w.pronunciation:'', false, null, 'e.g. ar-TIK-yuh-lət or /ɑrˈtɪk.jə.lət/') +
+        wordTypeField(w?w.wordType:'general') +
+        taField('Core Meaning &amp; Nuance', 'meaning', w?w.meaning:'', true, 'Precise sense + any nuance vs. a simple dictionary gloss.') +
+        field('Form (part of speech / word family)', 'form', w?w.form:'', true, 'e.g. verb (trans.); noun form: X; adj form: Y') +
+        field('Grammar (patterns, prepositions)', 'grammar', w?w.grammar:'', true, 'e.g. "~ sb of sth", "~ into + noun"') +
+        repeatGroup('Collocations (at least 2 natural partners)', 'collocations', w?w.collocations:['',''], true) +
+        taField('Contrast (similar words + differences)', 'contrast', w?w.contrast:'', true, 'e.g. vs. "X": more formal / implies intent') +
+        repeatGroup('Typical Contexts (at least 2 situations)', 'contexts', w?w.contexts:['',''], true) +
+        taField('Production Sentence (your own original sentence)', 'production', w?w.production:'', true) +
+        taField('Mnemonic', 'mnemonic', w?w.mnemonic:'', false, 'Optional, temporary scaffold — will fade after consistent success.') +
+        '<fieldset><legend>Cloze Sentences (2–5, optional — more sentences means more varied fill-in-the-blank practice; falls back to Production sentence)</legend>' +
+        repeatGroupPlain('cloze', w?w.cloze:['',''], 'Sentence containing "'+ (w?w.word:'the word') +'"') +
+        '</fieldset>' +
+        '<div id="formErrors" class="field-error"></div>' +
+        '<div class="btn-row" style="margin-top:18px;">' +
+          '<button type="submit" class="btn primary">'+(isEditing?'Save Changes':'Save Word')+'</button>' +
+          (isEditing?'<button type="button" class="btn ghost" id="cancelEditBtn">Cancel</button>':'') +
+        '</div>' +
+      '</form>';
+
+    const pasteHtml = isEditing ? '' :
+      '<h2>📋 Paste Import</h2>' +
+      '<p class="field-hint">Paste one word per line, fields separated by <b>|</b> in this exact order:</p>' +
+      '<p class="field-hint" style="font-family:var(--mono);font-size:11.5px;line-height:1.6;">' +
+      'Word | Core Meaning &amp; Nuance | Form | Grammar | Collocations | Contrast | Typical Contexts | Production Sentence | Mnemonic | Cloze Sentences | Pronunciation</p>' +
+      '<p class="field-hint">Use <b>;</b> to separate multiple Collocations, Contexts, or Cloze Sentences within their field (2–4 collocations and contexts recommended, up to 5 cloze sentences — each showing a different collocation or register keeps practice varied). Leave Mnemonic or Pronunciation blank if unused — the trailing Pronunciation field is optional and may be omitted entirely.</p>' +
+      '<button type="button" class="btn ghost small" id="copyAiPromptBtn" style="margin-bottom:10px;">📋 Copy generator prompt for AI</button>' +
+      '<label>Paste text</label>' +
+      '<textarea id="pasteArea" rows="6" placeholder="Apple | Edible fruit, often red or green | Noun | plural: apples | red apple; green apple; apple orchard | Orange (fruit) | I ate an apple; The apple fell; She packed an apple for lunch | I bought an apple at the store | | I ate an apple for lunch; The apple fell from the tree; She packed a crisp apple for the trip | AP-uhl"></textarea>' +
+      '<div id="pasteErrors" class="field-error"></div>' +
+      '<div id="pasteSuccess" class="field-hint" style="color:var(--good);font-weight:600;"></div>' +
+      '<div class="btn-row" style="margin-top:14px;">' +
+        '<button type="button" class="btn primary" id="parseFillBtn">Parse &amp; Fill</button>' +
+        '<button type="button" class="btn ghost" id="pasteClearBtn">Clear</button>' +
+      '</div>';
+
+    el.innerHTML = '<div class="card">' + subtabNav +
+      '<div id="manualBlock">' + manualHtml + '</div>' +
+      (isEditing ? '' : '<div id="pasteBlock" class="hidden">' + pasteHtml + '</div>') +
+      '</div>';
+
+    function wordTypeField(val){
+      return '<label>Word Type <span class="opt">(shapes how the Teaching Phase is taught)</span></label>' +
+        '<select name="wordType">' + WORD_TYPES.map(t=>'<option value="'+t.key+'"'+(val===t.key?' selected':'')+'>'+t.label+'</option>').join('') + '</select>';
+    }
+    function field(label, name, val, req, hint, placeholder){
+      return '<label>'+label+(req?' <span class="req">*</span>':' <span class="opt">(optional)</span>')+'</label>' +
+        '<input type="text" name="'+name+'" value="'+Utils.escapeHtml(val)+'"'+(placeholder?' placeholder="'+Utils.escapeHtml(placeholder)+'"':'')+'>' +
+        (hint?'<div class="field-hint">'+hint+'</div>':'');
+    }
+    function taField(label, name, val, req, hint){
+      return '<label>'+label+(req?' <span class="req">*</span>':' <span class="opt">(optional)</span>')+'</label>' +
+        '<textarea name="'+name+'">'+Utils.escapeHtml(val)+'</textarea>' +
+        (hint?'<div class="field-hint">'+hint+'</div>':'');
+    }
+    function repeatGroup(label, name, vals, req){
+      vals = vals && vals.length ? vals : ['',''];
+      return '<label>'+label+(req?' <span class="req">*</span>':'')+'</label>' +
+        '<div class="repeat-group" data-name="'+name+'">' +
+        vals.map(v=>'<div class="row"><input type="text" value="'+Utils.escapeHtml(v)+'"><button type="button" class="btn ghost small remove-row">✕</button></div>').join('') +
+        '<button type="button" class="btn ghost small add-row">+ Add another</button></div>';
+    }
+    function repeatGroupPlain(name, vals, placeholder){
+      vals = vals && vals.length ? vals : ['',''];
+      return '<div class="repeat-group" data-name="'+name+'">' +
+        vals.map(v=>'<div class="row"><input type="text" placeholder="'+Utils.escapeHtml(placeholder)+'" value="'+Utils.escapeHtml(v)+'"><button type="button" class="btn ghost small remove-row">✕</button></div>').join('') +
+        '<button type="button" class="btn ghost small add-row">+ Add sentence (max 5)</button></div>';
+    }
+
+    el.querySelectorAll('.repeat-group').forEach(group=>{
+      group.addEventListener('click', (e)=>{
+        if(e.target.classList.contains('add-row')){
+          const max = group.dataset.name==='cloze' ? 5 : 99;
+          if(group.querySelectorAll('.row').length>=max) return;
+          const row = document.createElement('div'); row.className='row';
+          row.innerHTML = '<input type="text"><button type="button" class="btn ghost small remove-row">✕</button>';
+          group.insertBefore(row, e.target);
+        } else if(e.target.classList.contains('remove-row')){
+          const rows = group.querySelectorAll('.row');
+          if(rows.length>1) e.target.closest('.row').remove();
+        }
+      });
+    });
+
+    if(isEditing){
+      el.querySelector('#cancelEditBtn').addEventListener('click', ()=>App.showTab('bank'));
+    }
+
+    el.querySelector('#wordForm').addEventListener('submit', (e)=>{
+      e.preventDefault();
+      this.handleSaveWord(e.target, existingRef);
+    });
+
+    if(!isEditing){
+      const manualBtn = el.querySelector('#subtabManualBtn');
+      const pasteBtn = el.querySelector('#subtabPasteBtn');
+      const manualBlock = el.querySelector('#manualBlock');
+      const pasteBlock = el.querySelector('#pasteBlock');
+      manualBtn.addEventListener('click', ()=>{
+        manualBlock.classList.remove('hidden'); pasteBlock.classList.add('hidden');
+        manualBtn.classList.add('primary'); manualBtn.classList.remove('ghost');
+        pasteBtn.classList.add('ghost'); pasteBtn.classList.remove('primary');
+      });
+      pasteBtn.addEventListener('click', ()=>{
+        pasteBlock.classList.remove('hidden'); manualBlock.classList.add('hidden');
+        pasteBtn.classList.add('primary'); pasteBtn.classList.remove('ghost');
+        manualBtn.classList.add('ghost'); manualBtn.classList.remove('primary');
+      });
+      el.querySelector('#parseFillBtn').addEventListener('click', ()=>this.handleParseFill(el));
+      el.querySelector('#pasteClearBtn').addEventListener('click', ()=>{
+        el.querySelector('#pasteArea').value = '';
+        el.querySelector('#pasteErrors').innerHTML = '';
+        el.querySelector('#pasteSuccess').textContent = '';
+      });
+      const copyPromptBtn = el.querySelector('#copyAiPromptBtn');
+      if(copyPromptBtn) copyPromptBtn.addEventListener('click', ()=>{
+        navigator.clipboard.writeText(AI_GENERATOR_PROMPT).then(()=>{
+          Utils.toast('Prompt copied — paste it into your AI agent, add your word list, and paste its output below.');
+        }).catch(()=>{
+          Utils.toast('Could not copy automatically — select and copy the prompt manually.');
+        });
+      });
+    }
+  },
+
+  handleParseFill(el){
+    const textarea = el.querySelector('#pasteArea');
+    const errBox = el.querySelector('#pasteErrors');
+    const okBox = el.querySelector('#pasteSuccess');
+    errBox.innerHTML = ''; okBox.textContent = '';
+
+    const rawLines = textarea.value.split(/\r?\n/);
+    const lines = rawLines.map((l,i)=>({ text:l, num:i+1 })).filter(l=>l.text.trim().length>0);
+    if(lines.length===0){
+      errBox.textContent = 'Paste at least one line of structured text first.';
+      return;
+    }
+
+    if(lines.length===1){
+      let data;
+      try{
+        data = BulkImport.parseLine(lines[0].text);
+      }catch(e){
+        errBox.textContent = 'Line ' + lines[0].num + ': ' + e.message;
+        return;
+      }
+      if(Storage.state.words.some(w2=>Utils.normalize(w2.word)===Utils.normalize(data.word))){
+        errBox.textContent = 'Line ' + lines[0].num + ': "' + data.word + '" already exists in your bank.';
+        return;
+      }
+      this.renderAddForm(data, null);
+      Utils.toast('Parsed — review and save below.');
+      return;
+    }
+
+    // multiple lines: parse each, add valid ones directly, report failures
+    const seen = new Set(Storage.state.words.map(w2=>Utils.normalize(w2.word)));
+    const failures = [];
+    const addedWords = [];
+    lines.forEach(line=>{
+      let data;
+      try{
+        data = BulkImport.parseLine(line.text);
+      }catch(e){
+        failures.push({ line, message: e.message });
+        return;
+      }
+      const key = Utils.normalize(data.word);
+      if(seen.has(key)){
+        failures.push({ line, message: '"'+data.word+'" already exists or is duplicated in this batch.' });
+        return;
+      }
+      seen.add(key);
+      const w2 = WordModel.create(data);
+      Storage.state.words.push(w2);
+      addedWords.push(w2);
+    });
+
+    if(addedWords.length) Storage.save();
+
+    if(failures.length){
+      errBox.innerHTML = failures.map(f=>'Line '+f.line.num+': '+Utils.escapeHtml(f.message)).join('<br>');
+      textarea.value = failures.map(f=>f.line.text).join('\n');
+      okBox.textContent = addedWords.length ? ('Added ' + addedWords.length + ' word(s): ' + addedWords.map(w=>w.word).join(', ') + '. Fix the remaining line(s) above, or begin teaching the added words now.') : '';
+      if(addedWords.length){
+        const beginRow = document.createElement('div');
+        beginRow.className = 'btn-row';
+        beginRow.style.marginTop = '10px';
+        beginRow.innerHTML = '<button type="button" class="btn primary small" id="beginTeachPartialBtn">▶ Begin Teaching Added Word(s)</button>';
+        okBox.after(beginRow);
+        beginRow.querySelector('#beginTeachPartialBtn').addEventListener('click', ()=>{
+          Teaching.startQueue(addedWords, ()=>{ App.showTab('bank'); Utils.toast('Teaching complete for all imported words.'); });
+        });
+      }
+      return;
+    }
+    textarea.value = '';
+    okBox.textContent = addedWords.length ? ('Added ' + addedWords.length + ' word(s): ' + addedWords.map(w=>w.word).join(', ')) : '';
+    if(addedWords.length){
+      this.renderBeginTeaching(addedWords, ()=>{ App.showTab('bank'); Utils.toast('Teaching complete for all imported words.'); });
+    }
+  },
+
+  renderBeginTeaching(words, onAllComplete){
+    const el = document.getElementById('view-add');
+    const list = words.map(w=>'<li>'+Utils.escapeHtml(w.word)+'</li>').join('');
+    el.innerHTML = '<div class="card center">' +
+      '<h2>'+(words.length>1 ? words.length+' words saved' : '"'+Utils.escapeHtml(words[0].word)+'" saved')+'</h2>' +
+      '<p class="field-hint">Before these enter your spaced-review queue, each one goes through a short Teaching Phase — introduce, define, contextualize, then guided → supported → constrained → independent practice.</p>' +
+      '<ul class="teach-list" style="display:inline-block;text-align:left;">'+list+'</ul>' +
+      '<div class="btn-row" style="justify-content:center;margin-top:14px;">' +
+      '<button class="btn primary" id="beginTeachBtn">▶ Begin Teaching'+(words.length>1?' ('+words.length+' words)':'')+'</button>' +
+      '</div></div>';
+    el.querySelector('#beginTeachBtn').addEventListener('click', ()=>{
+      Teaching.startQueue(words, onAllComplete);
+    });
+  },
+
+  handleSaveWord(form, existing){
+    const fd = new FormData(form);
+    const word = (fd.get('word')||'').trim();
+    const meaning = (fd.get('meaning')||'').trim();
+    const formField = (fd.get('form')||'').trim();
+    const grammar = (fd.get('grammar')||'').trim();
+    const contrast = (fd.get('contrast')||'').trim();
+    const production = (fd.get('production')||'').trim();
+    const mnemonic = (fd.get('mnemonic')||'').trim();
+    const pronunciation = (fd.get('pronunciation')||'').trim();
+    const wordType = (fd.get('wordType')||'general').trim();
+    const collocations = readRepeat(form, 'collocations');
+    const contexts = readRepeat(form, 'contexts');
+    const cloze = readRepeatPlain(form, 'cloze');
+
+    const errors = [];
+    if(!word) errors.push('Word is required.');
+    if(!meaning) errors.push('Core meaning is required.');
+    if(!formField) errors.push('Form is required.');
+    if(!grammar) errors.push('Grammar is required.');
+    if(collocations.length<2) errors.push('At least 2 collocations are required.');
+    if(!contrast) errors.push('Contrast is required.');
+    if(contexts.length<2) errors.push('At least 2 typical contexts are required.');
+    if(!production) errors.push('A production sentence is required.');
+    if(!existing && word && Storage.state.words.some(w2=>Utils.normalize(w2.word)===Utils.normalize(word))){
+      errors.push('This word already exists in your bank.');
+    }
+
+    const errEl = document.getElementById('formErrors');
+    if(errors.length){
+      errEl.innerHTML = errors.map(Utils.escapeHtml).join('<br>');
+      return;
+    }
+    errEl.innerHTML = '';
+
+    let finalCloze = cloze.filter(Boolean);
+    if(finalCloze.length===0 && production) finalCloze = [];
+
+    if(existing){
+      Object.assign(existing, { word, meaning, form: formField, grammar, collocations, contrast, contexts, production, mnemonic, pronunciation, cloze: finalCloze, wordType });
+      Storage.save();
+      Utils.toast('Word updated.');
+      App.showTab('bank');
+    } else {
+      const w = WordModel.create({ word, meaning, form: formField, grammar, collocations, contrast, contexts, production, mnemonic, pronunciation, cloze: finalCloze, wordType });
+      Storage.state.words.push(w);
+      Storage.save();
+      this.renderBeginTeaching([w], ()=>App.showTab('bank'));
+    }
+
+    function readRepeat(form, name){
+      const group = form.querySelector('.repeat-group[data-name="'+name+'"]');
+      return Array.from(group.querySelectorAll('input')).map(i=>i.value.trim()).filter(Boolean);
+    }
+    function readRepeatPlain(form, name){
+      const group = form.querySelector('.repeat-group[data-name="'+name+'"]');
+      return Array.from(group.querySelectorAll('input')).map(i=>i.value.trim());
+    }
+  },
+
+  /* ---------- WORD BANK ---------- */
+  renderBank(){
+    const el = document.getElementById('view-bank');
+    const words = Storage.state.words.slice().sort((a,b)=> a.word.localeCompare(b.word));
+    if(words.length===0){
+      el.innerHTML = '<div class="card empty-state"><div class="big">🗂️</div><h2>Word bank is empty</h2></div>';
+      return;
+    }
+    el.innerHTML = '<div class="card"><h2>Word Bank ('+words.length+')</h2>' +
+      words.map(w=>{
+        const untaught = !w.teaching || !w.teaching.completed;
+        const stage = untaught ? 'Untaught' : WordModel.computeMastery(w);
+        const achieved = DIM_KEYS.filter(k=>w.dims && w.dims[k] && w.dims[k].status==='Achieved').length;
+        const typeLabel = (WORD_TYPES.find(t=>t.key===w.wordType)||WORD_TYPES[0]).label;
+        return '<div class="bank-row" data-id="'+w.id+'">' +
+          '<div class="word-row">' +
+          '<div><div class="w">'+Utils.escapeHtml(w.word)+
+          ' <button type="button" class="speak-btn small" data-word="'+Utils.escapeHtml(w.word)+'" title="Listen">🔊</button>'+
+          ' <span class="word-type-tag">'+typeLabel+'</span></div>' +
+          (w.pronunciation ? '<div class="meta pronunciation">'+Utils.escapeHtml(w.pronunciation)+'</div>' : '') +
+          '<div class="meta">'+Utils.escapeHtml(w.meaning)+'</div>' +
+          '<div class="meta">'+(untaught ? 'Not yet taught — step '+(w.teaching?w.teaching.currentStep:1)+' of 8' :
+            'Next review: '+Utils.fmtDate(w.srs.nextReview)+' · interval '+w.srs.interval+'d · '+achieved+'/11 dimensions achieved')+'</div></div>' +
+          '<div class="right">' +
+          '<span class="badge '+stage.replace(' ','')+'">'+stage+'</span>' +
+          (untaught ? '<button class="btn primary small resume-teach-btn">▶ '+((w.teaching&&w.teaching.currentStep>1)?'Resume':'Begin')+' Teaching</button>' :
+            '<button class="btn ghost small edit-btn">Edit</button>') +
+          (((w.cloze&&w.cloze.length)||w.production) ? '<button class="btn ghost small examples-btn">Examples</button>' : '') +
+          '<button class="btn ghost small del-btn">Delete</button>' +
+          '</div>' +
+          '</div>' +
+          '<div class="examples-panel hidden"></div>' +
+          '</div>';
+      }).join('') + '</div>';
+
+    el.querySelectorAll('.bank-row').forEach(row=>{
+      const id = row.dataset.id;
+      const editBtn = row.querySelector('.edit-btn');
+      if(editBtn) editBtn.addEventListener('click', ()=>{
+        const w = Storage.state.words.find(x=>x.id===id);
+        App.showTab('add'); this.renderAddForm(w, w);
+      });
+      const resumeBtn = row.querySelector('.resume-teach-btn');
+      if(resumeBtn) resumeBtn.addEventListener('click', ()=>{
+        const w = Storage.state.words.find(x=>x.id===id);
+        Teaching.startQueue([w], ()=>App.showTab('bank'));
+      });
+      const examplesBtn = row.querySelector('.examples-btn');
+      if(examplesBtn) examplesBtn.addEventListener('click', ()=>{
+        const w = Storage.state.words.find(x=>x.id===id);
+        const panel = row.querySelector('.examples-panel');
+        const opening = panel.classList.contains('hidden');
+        if(opening){
+          const sentences = (w.cloze||[]).concat(w.production ? [w.production] : []).filter(Boolean);
+          const wb = new RegExp('\\b'+Utils.escapeRegex(w.word)+'\\b','ig');
+          panel.innerHTML = sentences.length ?
+            '<ul class="teach-list">' + sentences.map(s=>'<li>'+Utils.escapeHtml(s).replace(wb, m=>'<b>'+m+'</b>')+'</li>').join('') + '</ul>' :
+            '<div class="meta">No example sentences saved yet — edit this word to add some.</div>';
+        }
+        panel.classList.toggle('hidden');
+        examplesBtn.textContent = opening ? 'Hide examples' : 'Examples';
+      });
+      row.querySelector('.del-btn').addEventListener('click', ()=>{
+        Modal.confirm('Delete "'+row.querySelector('.w').textContent+'"? This cannot be undone.', ()=>{
+          Storage.state.words = Storage.state.words.filter(x=>x.id!==id);
+          Storage.save();
+          this.renderBank();
+          Utils.toast('Word deleted.');
+        });
+      });
+    });
+  },
+
+  /* ---------- ERRORS ---------- */
+  renderErrors(){
+    const el = document.getElementById('view-errors');
+    const log = Storage.state.errorLog.slice().sort((a,b)=>b.ts-a.ts);
+    const totals = {};
+    ERROR_CATEGORIES.forEach(c=>totals[c]=0);
+    log.forEach(e=>{ if(totals[e.category]!=null) totals[e.category]++; });
+
+    let html = '<div class="card"><h2>Error Categories</h2>';
+    if(log.length===0){
+      html += '<div class="empty-state">No errors logged yet.</div>';
+    } else {
+      html += Object.entries(totals).sort((a,b)=>b[1]-a[1]).map(([c,v])=>
+        '<div class="bar-row"><div style="width:110px">'+c+'</div><div class="bar-track"><div class="bar-fill" style="background:var(--bad);width:'+(v?Math.min(100,v*10):0)+'%"></div></div><div style="width:26px;text-align:right">'+v+'</div>' +
+        (v>0?'<button class="btn ghost small practice-cat-btn" data-cat="'+c+'">Practice</button>':'') + '</div>'
+      ).join('');
+    }
+    html += '</div>';
+
+    if(log.length){
+      html += '<div class="card"><h2>Recent Errors</h2>' +
+        log.slice(0,30).map(e=>'<div class="word-row"><div><div class="w">'+Utils.escapeHtml(e.word)+'</div><div class="meta">'+Utils.fmtDate(e.date)+' · level '+e.level+'</div></div><span class="badge">'+e.category+'</span></div>').join('') +
+        '</div>';
+    }
+    el.innerHTML = html;
+    el.querySelectorAll('.practice-cat-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        App.showTab('practice');
+        this.runFreePractice({ category: btn.dataset.cat });
+      });
+    });
+  },
+
+  /* ---------- WRITING ---------- */
+  renderWriting(){
+    const el = document.getElementById('view-writing');
+    const sub = this._writingSub || 'audit';
+    el.innerHTML = '<div class="btn-row" style="margin-bottom:16px;">' +
+      '<button type="button" class="btn '+(sub==='audit'?'primary':'ghost')+' small" id="wSubAuditBtn">📝 Weekly Writing Audit</button>' +
+      '<button type="button" class="btn '+(sub==='exam'?'primary':'ghost')+' small" id="wSubExamBtn">⏱ Timed Exam Deployment</button>' +
+      '</div>' +
+      '<div id="auditContainer" class="'+(sub==='audit'?'':'hidden')+'"></div>' +
+      '<div id="examContainer" class="'+(sub==='exam'?'':'hidden')+'"></div>';
+    el.querySelector('#wSubAuditBtn').addEventListener('click', ()=>{ this._writingSub='audit'; this.renderWriting(); });
+    el.querySelector('#wSubExamBtn').addEventListener('click', ()=>{ this._writingSub='exam'; this.renderWriting(); });
+    Audit.render(document.getElementById('auditContainer'));
+    Exam.render(document.getElementById('examContainer'));
+  },
+
+  /* ---------- SETTINGS ---------- */
+  renderSettings(){
+    const el = document.getElementById('view-settings');
+    const s = Storage.state.settings;
+    el.innerHTML =
+      '<div class="card"><h2>Exam Date</h2>' +
+      '<p class="field-hint">If set, scheduling favors getting words to "Exam Ready" before this date.</p>' +
+      '<input type="date" id="examDateInput" value="'+(s.examDate||'')+'">' +
+      '<div class="btn-row" style="margin-top:10px;"><button class="btn primary small" id="saveExamBtn">Save</button>' +
+      (s.examDate?'<button class="btn ghost small" id="clearExamBtn">Clear</button>':'') + '</div></div>' +
+
+      '<div class="card"><h2>Backup &amp; Restore</h2>' +
+      '<div class="btn-row">' +
+      '<button class="btn ghost" id="exportBtn">⬇ Export JSON</button>' +
+      '<label class="btn ghost" style="cursor:pointer;">⬆ Import JSON<input type="file" id="importInput" accept="application/json" class="hidden"></label>' +
+      '</div></div>' +
+
+      '<div class="card"><h2>Data</h2>' +
+      '<div class="field-hint">Words: '+Storage.state.words.length+' · Error log entries: '+Storage.state.errorLog.length+'</div>' +
+      '<div class="btn-row" style="margin-top:10px;"><button class="btn bad" id="resetBtn">Erase All Data</button></div></div>' +
+
+      '<div class="card"><h3>About the method</h3>' +
+      '<p class="field-hint">This trainer prioritizes generative retrieval (typing/producing from memory) over recognition, uses adaptive spacing instead of a fixed schedule, and fades mnemonics once retrieval is reliable. Recognition is a warm-up only — it is never treated as mastery.</p></div>';
+
+    el.querySelector('#saveExamBtn').addEventListener('click', ()=>{
+      const v = el.querySelector('#examDateInput').value;
+      Storage.state.settings.examDate = v || null;
+      Storage.save(); Utils.toast('Exam date saved.'); this.renderSettings();
+    });
+    const clearBtn = el.querySelector('#clearExamBtn');
+    if(clearBtn) clearBtn.addEventListener('click', ()=>{ Storage.state.settings.examDate=null; Storage.save(); this.renderSettings(); });
+
+    el.querySelector('#exportBtn').addEventListener('click', ()=>Storage.exportJSON());
+    el.querySelector('#importInput').addEventListener('change', (e)=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        Modal.show('Import Data', '<p>Merge with existing data, or replace everything?</p>' +
+          '<div class="btn-row"><button class="btn primary small" id="mergeBtn">Merge</button><button class="btn bad small" id="replaceBtn">Replace All</button><button class="btn ghost small" id="cancelImportBtn">Cancel</button></div>',
+          (modalEl)=>{
+            modalEl.querySelector('#mergeBtn').addEventListener('click', ()=>{ if(Storage.importJSON(reader.result,'merge')){ Utils.toast('Imported (merged).'); App.showTab('dashboard'); } Modal.close(); });
+            modalEl.querySelector('#replaceBtn').addEventListener('click', ()=>{ if(Storage.importJSON(reader.result,'replace')){ Utils.toast('Imported (replaced).'); App.showTab('dashboard'); } Modal.close(); });
+            modalEl.querySelector('#cancelImportBtn').addEventListener('click', ()=>Modal.close());
+          });
+      };
+      reader.readAsText(file);
+    });
+    el.querySelector('#resetBtn').addEventListener('click', ()=>{
+      Modal.confirm('Erase ALL data? This cannot be undone. Consider exporting a backup first.', ()=>{
+        Storage.state = defaultState(); Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
+      });
+    });
+  },
+
+  /* ---------- PRACTICE HOME ---------- */
+  renderPracticeHome(){
+    const el = document.getElementById('view-practice');
+    if(Practice.session){ this.renderPracticeCard(); return; }
+    const words = Storage.state.words;
+    const taught = words.filter(w=>w.teaching && w.teaching.completed);
+    const overdue = taught.filter(w=>WordModel.isOverdue(w)).length;
+    const due = taught.filter(w=>WordModel.isDueToday(w)).length;
+    const awaitingTeaching = words.filter(w=>!w.teaching || !w.teaching.completed);
+    el.innerHTML = '<div class="card"><h2>Practice</h2>' +
+      '<div class="grid" style="margin-bottom:14px;">' +
+      '<div class="stat '+(overdue?'bad':'')+'"><div class="num">'+overdue+'</div><div class="label">Overdue</div></div>' +
+      '<div class="stat"><div class="num">'+due+'</div><div class="label">Due Today</div></div>' +
+      '<div class="stat '+(awaitingTeaching.length?'warn':'')+'"><div class="num">'+awaitingTeaching.length+'</div><div class="label">Awaiting Teaching</div></div></div>' +
+      '<div class="btn-row">' +
+      '<button class="btn primary" id="pReviewBtn" '+(taught.length?'':'disabled')+'>Review Due/Overdue</button>' +
+      '<button class="btn ghost" id="pNewBtn" '+(awaitingTeaching.length?'':'disabled')+'>Teach New Words</button>' +
+      '<button class="btn ghost" id="pProdBtn" '+(taught.some(w=>w.history.length>0)?'':'disabled')+'>Context / Production Drills</button>' +
+      '</div></div>';
+    if(words.length===0){
+      el.innerHTML += '<div class="card empty-state">Add words first, then come back to practice.</div>';
+      return;
+    }
+    el.querySelector('#pReviewBtn').addEventListener('click', ()=>this.runFreePractice({includeNew:false}));
+    el.querySelector('#pNewBtn').addEventListener('click', ()=>Teaching.startQueue(awaitingTeaching, ()=>App.showTab('practice')));
+    el.querySelector('#pProdBtn').addEventListener('click', ()=>this.runProductionDrills());
+  },
+
+  runFreePractice(opts){
+    opts = opts || {};
+    const queue = Practice.buildDueQueue(opts);
+    if(queue.length===0){
+      Utils.toast('Nothing to practice right now.');
+      App.showTab('dashboard');
+      return;
+    }
+    Practice.session = { queue, idx:0, results:[], mode:'free' };
+    Practice.persist();
+    this.renderPracticeCard();
+  },
+
+  runProductionDrills(){
+    const queue = Practice.buildProductionQueue(8);
+    if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
+    Practice.session = { queue, idx:0, results:[], mode:'production' };
+    Practice.persist();
+    this.renderPracticeCard();
+  },
+
+  renderPracticeCard(){
+    const el = document.getElementById('view-practice');
+    const s = Practice.session;
+    if(!s || s.idx>=s.queue.length){
+      const results = s ? s.results : [];
+      const correct = results.filter(r=>r.correct).length;
+      const summary = results.length ? Math.round(correct/results.length*100)+'% correct ('+correct+'/'+results.length+')' : 'No items practiced.';
+      el.innerHTML = '<div class="card center"><h2>Session Complete</h2><p>'+summary+'</p>' +
+        '<div class="btn-row" style="justify-content:center;"><button class="btn primary" id="doneBtn">Back to Dashboard</button></div></div>';
+      el.querySelector('#doneBtn').addEventListener('click', ()=>{
+        if(Session.active) Session.finishPhase(results);
+        Practice.session = null;
+        Practice.clearPersisted();
+        if(!Session.active) App.showTab('dashboard');
+      });
+      return;
+    }
+    if(s.reviewing){ this.renderPracticeReviewCard(); return; }
+
+    const item = s.queue[s.idx];
+    const q = Practice.generateQuestion(item);
+    s.currentQuestion = q; s.hintUsed = false;
+    const canGoBack = Practice.canGoBack();
+
+    el.innerHTML =
+      '<div class="practice-wrap">' +
+      '<div class="practice-progress">Item '+(s.idx+1)+' of '+s.queue.length+
+      ' <button type="button" class="btn ghost small" id="practiceBackBtn" style="margin-left:8px;"'+(canGoBack?'':' disabled')+'>← Back</button></div>' +
+      '<div class="practice-card" id="practiceCard">' +
+      '<div class="practice-level">Level '+q.level+' · '+levelName(q.level)+(q.drillType?' · Drill: '+q.drillType:'')+'</div>' +
+      renderMnemonic(q.word) +
+      renderMeaningHint(q) +
+      '<div class="practice-sub">'+Utils.escapeHtml(q.promptTitle||'')+'</div>' +
+      '<div class="practice-prompt">'+renderPrompt(q)+'</div>' +
+      (q.sub?'<div class="practice-sub">'+Utils.escapeHtml(q.sub)+'</div>':'') +
+      '<div id="answerArea"></div>' +
+      '<div id="feedbackArea"></div>' +
+      '</div></div>';
+
+    const answerArea = el.querySelector('#answerArea');
+    if(q.type==='recognition'){
+      answerArea.innerHTML = '<div class="mcq-options">' + q.options.map((o,i)=>'<button data-i="'+i+'">'+Utils.escapeHtml(o)+'</button>').join('') + '</div>';
+      answerArea.querySelectorAll('button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const val = q.options[+btn.dataset.i];
+          answerArea.querySelectorAll('button').forEach(b=>b.disabled=true);
+          const correct = val===q.correctAnswer;
+          btn.classList.add(correct?'correct':'incorrect');
+          if(!correct){
+            const cb = Array.from(answerArea.querySelectorAll('button')).find(b=>b.textContent===q.correctAnswer);
+            if(cb) cb.classList.add('correct');
+          }
+          this.handleGraded(q, correct, val);
+        });
+      });
+    } else if(q.autoGrade){
+      answerArea.innerHTML = '<div class="answer-input"><input type="text" id="answerInput" autocomplete="off" spellcheck="false" placeholder="Type your answer…">' +
+        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn">Check</button></div></div>';
+      const input = answerArea.querySelector('#answerInput');
+      input.focus();
+      const submit = ()=>{
+        const val = input.value.trim();
+        if(!val) return;
+        input.disabled = true; answerArea.querySelector('#submitBtn').disabled = true;
+        const correct = Practice.grade(q, val);
+        if(!correct && !s.hintUsed){
+          this.offerHint(q, val, answerArea);
+        } else {
+          this.handleGraded(q, correct, val);
+        }
+      };
+      answerArea.querySelector('#submitBtn').addEventListener('click', submit);
+      input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submit(); });
+    } else {
+      answerArea.innerHTML = '<div class="answer-input"><textarea id="answerInput" rows="3" placeholder="Write your sentence…"></textarea>' +
+        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn">Reveal Self-Check</button></div></div>';
+      answerArea.querySelector('#submitBtn').addEventListener('click', ()=>{
+        const val = answerArea.querySelector('#answerInput').value.trim();
+        this.showSelfCheck(q, val, answerArea);
+      });
+    }
+
+    const backBtn = el.querySelector('#practiceBackBtn');
+    if(backBtn && canGoBack){
+      backBtn.addEventListener('click', ()=>{ Practice.goBack(); this.renderPracticeCard(); });
+    }
+
+    function levelName(l){ return ['','Recognition','Cued Recall','Cloze','Free Production'][l]; }
+    function renderPrompt(q){
+      if(q.type==='recognition') return 'Word: <b>'+Utils.escapeHtml(q.prompt)+'</b>';
+      if(q.type==='cloze') return Utils.escapeHtml(q.prompt).replace('_____','<span class="blank">_____</span>');
+      return Utils.escapeHtml(q.prompt);
+    }
+    function renderMnemonic(word){
+      if(!word.mnemonic) return '';
+      if(WordModel.mnemonicFaded(word)) return '<div class="practice-mnemonic faded">Mnemonic faded — retrieve directly.</div>';
+      const safe = WordModel.maskWord(word.mnemonic, word.word);
+      return '<div class="practice-mnemonic">💡 '+Utils.escapeHtml(safe)+'</div>';
+    }
+    function renderMeaningHint(q){
+      if(!q.meaningHint) return '';
+      return '<div class="practice-mnemonic">🎯 Meaning: '+Utils.escapeHtml(q.meaningHint)+'</div>';
+    }
+  },
+
+  /* Read-only view of a previously graded card, reached via the practice "← Back"
+     control. Reuses the exact stored question (never regenerates one, since several
+     question generators are randomized) so the reveal matches what was actually
+     answered. Grading is disabled here — the only action is returning to the
+     current, still-in-progress card. */
+  renderPracticeReviewCard(){
+    const el = document.getElementById('view-practice');
+    const s = Practice.session;
+    const result = s.results.find(r=>r.idx===s.idx);
+    if(!result){ Practice.returnToCurrent(); this.renderPracticeCard(); return; }
+    const q = result.question;
+    const word = result.word;
+
+    function levelName(l){ return ['','Recognition','Cued Recall','Cloze','Free Production'][l]; }
+    function renderPrompt(q){
+      if(q.type==='recognition') return 'Word: <b>'+Utils.escapeHtml(q.prompt)+'</b>';
+      if(q.type==='cloze') return Utils.escapeHtml(q.prompt).replace('_____','<span class="blank">_____</span>');
+      return Utils.escapeHtml(q.prompt);
+    }
+
+    const gradeLine = result.correct
+      ? 'Grade given: <b>'+(result.rating==='easy'?'⚡ Easy':'😅 Hard')+'</b>'
+      : 'Marked as: <b>Again</b>'+(result.category?' · Error category: <b>'+Utils.escapeHtml(result.category)+'</b>':'');
+
+    el.innerHTML =
+      '<div class="practice-wrap">' +
+      '<div class="practice-progress">Item '+(s.idx+1)+' of '+s.queue.length+' <span class="badge" style="margin-left:8px;">Reviewing previous card</span></div>' +
+      '<div class="practice-card">' +
+      '<div class="practice-level">Level '+q.level+' · '+levelName(q.level)+(q.drillType?' · Drill: '+q.drillType:'')+'</div>' +
+      '<div class="reveal-word-row">'+Utils.escapeHtml(word.word)+
+        (word.pronunciation ? ' <span class="pronunciation">('+Utils.escapeHtml(word.pronunciation)+')</span>' : '') +
+        ' <button type="button" class="speak-btn small" data-word="'+Utils.escapeHtml(word.word)+'" title="Listen">🔊</button></div>' +
+      '<div class="practice-sub">'+Utils.escapeHtml(q.promptTitle||'')+'</div>' +
+      '<div class="practice-prompt">'+renderPrompt(q)+'</div>' +
+      '<div class="self-check">' +
+      '<div><b>Your answer:</b> '+Utils.escapeHtml(result.userVal || '(empty)')+'</div>' +
+      '<div><b>Meaning:</b> '+Utils.escapeHtml(word.meaning||'—')+'</div>' +
+      '<div><b>Collocations:</b> '+Utils.escapeHtml((word.collocations||[]).join(', ')||'—')+'</div>' +
+      (word.contexts && word.contexts.length ? '<div><b>Context:</b> '+Utils.escapeHtml(word.contexts[0])+'</div>' : '') +
+      '</div>' +
+      '<div class="feedback '+(result.correct?'correct':'incorrect')+'" style="margin-top:12px;">' + (result.correct?'✓ Correct':'✗ Not quite') +
+      (!result.correct ? '<div class="correct-answer">Correct: '+Utils.escapeHtml(q.correctAnswer || word.word)+'</div>' : '') +
+      '</div>' +
+      '<div class="practice-sub" style="margin-top:8px;">'+gradeLine+'</div>' +
+      '<div class="btn-row" style="justify-content:center;margin-top:16px;"><button class="btn primary" id="returnCurrentBtn">Return to current card</button></div>' +
+      '</div></div>';
+
+    el.querySelector('#returnCurrentBtn').addEventListener('click', ()=>{
+      Practice.returnToCurrent();
+      this.renderPracticeCard();
+    });
+  },
+
+  offerHint(q, wrongVal, answerArea){
+    const s = Practice.session;
+    s.hintUsed = true;
+    const answer = q.correctAnswer;
+    const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
+    answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
+      '<div class="answer-input"><div style="font-family:var(--mono);font-size:20px;letter-spacing:3px;margin-bottom:10px;">'+Utils.escapeHtml(hint)+'</div>' +
+      '<input type="text" id="answerInput2" autocomplete="off" spellcheck="false" placeholder="Type your answer…">' +
+      '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn2">Check</button></div></div>';
+    const input = answerArea.querySelector('#answerInput2');
+    input.focus();
+    const submit = ()=>{
+      const val = input.value.trim();
+      if(!val) return;
+      input.disabled = true;
+      const correct = Practice.grade(q, val);
+      this.handleGraded(q, correct, val, true);
+    };
+    answerArea.querySelector('#submitBtn2').addEventListener('click', submit);
+    input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submit(); });
+  },
+
+  showSelfCheck(question, userText, answerArea){
+    const word = question.word;
+    answerArea.innerHTML =
+      '<div class="reveal-word-row">'+Utils.escapeHtml(word.word)+
+      (word.pronunciation ? ' <span class="pronunciation">('+Utils.escapeHtml(word.pronunciation)+')</span>' : '') +
+      ' <button type="button" class="speak-btn small" data-word="'+Utils.escapeHtml(word.word)+'" title="Listen">🔊</button></div>' +
+      '<div class="feedback"><b>Your sentence:</b><div style="margin-top:4px;">'+Utils.escapeHtml(userText || '(empty)')+'</div></div>' +
+      '<div class="self-check">' +
+      '<div><b>Meaning:</b> '+Utils.escapeHtml(word.meaning||'—')+'</div>' +
+      '<div><b>Collocations:</b> '+Utils.escapeHtml(word.collocations.join(', ')||'—')+'</div>' +
+      '<div><b>Grammar:</b> '+Utils.escapeHtml(word.grammar||'—')+'</div>' +
+      '<div><b>Contrast:</b> '+Utils.escapeHtml(word.contrast||'—')+'</div>' +
+      '<div><b>Register/context fit:</b> does it match a typical context?</div>' +
+      '</div>' +
+      '<div class="practice-sub" style="margin-top:12px;">Did you use "'+Utils.escapeHtml(word.word)+'" correctly and naturally?</div>' +
+      '<div class="rating-row"><button class="btn good" id="selfYesBtn">Yes, correct</button><button class="btn bad" id="selfNoBtn">No, needs work</button></div>';
+    answerArea.querySelector('#selfYesBtn').addEventListener('click', ()=>this.handleGraded(question, true, userText));
+    answerArea.querySelector('#selfNoBtn').addEventListener('click', ()=>this.handleGraded(question, false, userText));
+  },
+
+  handleGraded(question, correct, userVal, hintWasUsed){
+    const word = question.word;
+    const s = Practice.session;
+    const feedbackArea = document.getElementById('feedbackArea');
+    let fbHtml = '<div class="feedback '+(correct?'correct':'incorrect')+'">' + (correct?'✓ Correct':'✗ Not quite');
+    if(!correct){
+      fbHtml += '<div class="correct-answer">Correct: '+Utils.escapeHtml(question.correctAnswer || word.word) +
+        (word.pronunciation ? ' <span class="pronunciation">('+Utils.escapeHtml(word.pronunciation)+')</span>' : '') +
+        ' <button type="button" class="speak-btn small" data-word="'+Utils.escapeHtml(word.word)+'" title="Listen">🔊</button></div>';
+      if(question.correctAnswer && userVal){
+        const dist = Utils.levenshtein(Utils.normalize(userVal), Utils.normalize(question.correctAnswer));
+        if(dist>0 && dist<=2) fbHtml += '<div class="field-hint">Close — looks like it may be a spelling slip.</div>';
+      }
+    }
+    if(question.autoGrade){
+      if(word.meaning) fbHtml += '<div class="field-hint">Meaning: '+Utils.escapeHtml(word.meaning)+'</div>';
+      if(word.collocations.length) fbHtml += '<div class="field-hint">Collocations: '+Utils.escapeHtml(word.collocations.join(', '))+'</div>';
+    }
+    fbHtml += '</div>';
+
+    if(!correct){
+      fbHtml += '<div class="practice-sub" style="margin-top:12px;">What kind of error was this?</div>' +
+        '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>' +
+        '<div class="btn-row" style="justify-content:center;margin-top:14px;"><button class="btn primary" id="continueBtn" disabled>Continue</button></div>';
+    } else {
+      fbHtml += '<div class="practice-sub" style="margin-top:12px;">How did that feel?</div>' +
+        '<div class="rating-row"><button class="btn warn" id="hardBtn">😅 Hard (effortful)</button><button class="btn good" id="easyBtn">⚡ Easy (fluent)</button></div>';
+    }
+    feedbackArea.innerHTML = fbHtml;
+
+    if(!correct){
+      let chosenCat = null;
+      const contBtn = feedbackArea.querySelector('#continueBtn');
+      feedbackArea.querySelectorAll('.error-cats button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          feedbackArea.querySelectorAll('.error-cats button').forEach(b=>b.classList.remove('picked'));
+          btn.classList.add('picked');
+          chosenCat = btn.dataset.c;
+          contBtn.disabled = false;
+        });
+      });
+      contBtn.addEventListener('click', ()=>{
+        WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat });
+        WordModel.logError(word, chosenCat, question.level);
+        WordModel.updateLadder(word, question.level, false);
+        WordModel.applyRating(word, 'again');
+        Storage.save();
+        s.results.push({ idx: s.idx, word, question, userVal, correct:false, category: chosenCat });
+        s.idx++;
+        Practice.persist();
+        this.renderPracticeCard();
+      });
+    } else {
+      const finish = (rating)=>{
+        WordModel.logAttempt(word, question.level, true, { rating });
+        WordModel.updateLadder(word, question.level, true);
+        WordModel.applyRating(word, rating);
+        this.recordDimForQuestion(question, true);
+        Storage.save();
+        s.results.push({ idx: s.idx, word, question, userVal, correct:true, rating });
+        s.idx++;
+        Practice.persist();
+        this.renderPracticeCard();
+      };
+      feedbackArea.querySelector('#hardBtn').addEventListener('click', ()=>finish('hard'));
+      feedbackArea.querySelector('#easyBtn').addEventListener('click', ()=>finish('easy'));
+    }
+  },
+
+  recordDimForQuestion(question, success){
+    const word = question.word;
+    if(question.type==='recognition') DimModel.record(word, 'meaningRecognition', success);
+    else if(question.type==='cued'){ DimModel.record(word, 'meaningRecall', success); DimModel.record(word, 'formRecall', success); }
+    else if(question.type==='cloze') DimModel.record(word, 'contextualComprehension', success);
+    else if(question.type==='drill') DimModel.record(word, 'novelApplication', success);
+    else if(question.type==='production') DimModel.record(word, 'independentProduction', success);
+  }
+};
+
+/* ============================== MODAL ============================== */
+const Modal = {
+  show(title, bodyHtml, onMount){
+    const root = document.getElementById('modalRoot');
+    root.innerHTML = '<div class="modal-overlay" id="modalOverlay"><div class="modal"><h2>'+title+'</h2><div>'+bodyHtml+'</div></div></div>';
+    if(onMount) onMount(root.querySelector('.modal'));
+    root.querySelector('#modalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='modalOverlay') this.close(); });
+  },
+  close(){ document.getElementById('modalRoot').innerHTML=''; },
+  confirm(msg, onYes){
+    this.show('Confirm', '<p>'+Utils.escapeHtml(msg)+'</p><div class="btn-row"><button class="btn bad small" id="yesBtn">Yes, proceed</button><button class="btn ghost small" id="noBtn">Cancel</button></div>', (m)=>{
+      m.querySelector('#yesBtn').addEventListener('click', ()=>{ this.close(); onYes(); });
+      m.querySelector('#noBtn').addEventListener('click', ()=>this.close());
+    });
+  }
+};
+
+/* ============================== WEEKLY WRITING AUDIT ============================== */
+const Audit = {
+  essayText: '',
+  tags: [], // {id, start, end, quoted, word, category, correction}
+  container: null,
+
+  render(container){
+    this.container = container;
+    this.draw();
+  },
+
+  draw(){
+    const el = this.container;
+    el.innerHTML =
+      '<div class="card"><h2>📝 Weekly Writing Audit</h2>' +
+      '<p class="field-hint">Paste an essay or paragraph you wrote. Select any weak or incorrect vocabulary usage, tag it with an error category and a corrected version, then generate targeted review items.</p>' +
+      '<label>Your writing</label>' +
+      '<textarea id="essayInput" rows="10" placeholder="Paste your essay or paragraph here…">'+Utils.escapeHtml(this.essayText)+'</textarea>' +
+      '<div class="btn-row" style="margin-top:10px;">' +
+      '<button type="button" class="btn primary small" id="tagSelBtn">🏷 Tag Selected Text</button>' +
+      '<button type="button" class="btn ghost small" id="clearEssayBtn">Clear</button>' +
+      '</div></div>' +
+      (this.tags.length ? this.renderTagList() : '') +
+      '<div class="card">' +
+      '<div class="btn-row"><button type="button" class="btn good" id="createReviewBtn" '+(this.tags.length?'':'disabled')+'>✓ Create Review Items ('+this.tags.length+')</button></div>' +
+      '<p class="field-hint" style="margin-top:8px;">Each tagged error is classified into one of the seven categories (Meaning, Form, Spelling, Grammar, Collocation, Register, Selection) and fed into the same error-diagnosis system and mastery dimensions used by Practice and the Teaching Phase.</p>' +
+      '</div>';
+
+    const textarea = el.querySelector('#essayInput');
+    textarea.addEventListener('input', ()=>{ this.essayText = textarea.value; });
+    el.querySelector('#tagSelBtn').addEventListener('click', ()=>{
+      const start = textarea.selectionStart, end = textarea.selectionEnd;
+      if(start===end){ Utils.toast('Select some text in your writing first.'); return; }
+      const quoted = textarea.value.slice(start,end);
+      this.openTagModal(start,end,quoted);
+    });
+    el.querySelector('#clearEssayBtn').addEventListener('click', ()=>{
+      if(!this.essayText && this.tags.length===0) return;
+      Modal.confirm('Clear the writing and all tags?', ()=>{
+        this.essayText=''; this.tags=[]; this.draw();
+      });
+    });
+    el.querySelectorAll('.tag-remove-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        this.tags = this.tags.filter(t=>t.id!==btn.dataset.id);
+        this.draw();
+      });
+    });
+    const createBtn = el.querySelector('#createReviewBtn');
+    if(createBtn) createBtn.addEventListener('click', ()=>this.createReviewItems());
+  },
+
+  renderTagList(){
+    return '<div class="card"><h3>Tagged Errors ('+this.tags.length+')</h3>' +
+      this.tags.map(t=>
+        '<div class="tag-item">' +
+        '<div><span class="quoted">'+Utils.escapeHtml(t.quoted)+'</span><span class="arrow">→</span><span class="corrected">'+Utils.escapeHtml(t.correction)+'</span></div>' +
+        '<div class="meta-row"><span class="badge">'+t.category+'</span><span class="field-hint">word: '+Utils.escapeHtml(t.word)+'</span>' +
+        '<button type="button" class="btn ghost small tag-remove-btn" data-id="'+t.id+'">Remove</button></div>' +
+        '</div>'
+      ).join('') + '</div>';
+  },
+
+  openTagModal(start,end,quoted){
+    const guessWord = (quoted.trim().split(/\s+/)[0]||'').replace(/[^A-Za-z'-]/g,'');
+    Modal.show('Tag Vocabulary Error',
+      '<p class="field-hint">Selected: &ldquo;'+Utils.escapeHtml(quoted)+'&rdquo;</p>' +
+      '<label>Vocabulary word</label><input type="text" id="tagWordInput" value="'+Utils.escapeHtml(guessWord)+'">' +
+      '<label>Error category</label><div class="error-cats" id="tagCats">'+ERROR_CATEGORIES.map(c=>'<button type="button" data-c="'+c+'">'+c+'</button>').join('')+'</div>' +
+      '<label>Corrected version</label><textarea id="tagCorrection" placeholder="What should it have said?"></textarea>' +
+      '<div id="tagModalErr" class="field-error"></div>' +
+      '<div class="btn-row" style="margin-top:14px;"><button type="button" class="btn primary small" id="saveTagBtn">Save Tag</button><button type="button" class="btn ghost small" id="cancelTagBtn">Cancel</button></div>',
+      (m)=>{
+        let cat = null;
+        m.querySelectorAll('#tagCats button').forEach(b=>{
+          b.addEventListener('click', ()=>{
+            m.querySelectorAll('#tagCats button').forEach(x=>x.classList.remove('picked'));
+            b.classList.add('picked'); cat = b.dataset.c;
+          });
+        });
+        m.querySelector('#cancelTagBtn').addEventListener('click', ()=>Modal.close());
+        m.querySelector('#saveTagBtn').addEventListener('click', ()=>{
+          const word = m.querySelector('#tagWordInput').value.trim();
+          const correction = m.querySelector('#tagCorrection').value.trim();
+          const errEl = m.querySelector('#tagModalErr');
+          if(!word){ errEl.textContent='Enter the vocabulary word this error is about.'; return; }
+          if(!cat){ errEl.textContent='Choose an error category.'; return; }
+          if(!correction){ errEl.textContent='Enter the corrected version.'; return; }
+          this.tags.push({ id: Utils.uid(), start, end, quoted, word, category: cat, correction });
+          Modal.close();
+          this.draw();
+        });
+      });
+  },
+
+  createReviewItems(){
+    if(this.tags.length===0) return;
+    const matchedCount = { n:0 };
+    const unmatched = [];
+    this.tags.forEach(t=>{
+      const w = WordModel.findByText(t.word);
+      if(w){ ErrorIntegration.recordProductionError(w, t.category, 'audit-review'); matchedCount.n++; }
+      else unmatched.push(t);
+    });
+    Storage.state.writingLog.push({
+      ts: Date.now(), date: Utils.todayISO(), text: this.essayText,
+      errors: this.tags.map(t=>({ quoted:t.quoted, word:t.word, category:t.category, correction:t.correction, matched: !!WordModel.findByText(t.word) }))
+    });
+    Storage.save();
+
+    this.tags = [];
+    this.draw();
+
+    Utils.toast(matchedCount.n ? (matchedCount.n+' word(s) scheduled for targeted retrieval practice.') : 'Review items processed.');
+
+    if(unmatched.length) this.promptAddUnmatched(unmatched);
+  },
+
+  promptAddUnmatched(unmatched){
+    const uniqueWords = [];
+    const seen = new Set();
+    unmatched.forEach(t=>{ const k=Utils.normalize(t.word); if(!seen.has(k)){ seen.add(k); uniqueWords.push(t.word); } });
+    Modal.show('New Words Found',
+      '<p class="field-hint">These tagged words aren\'t in your bank yet. Add one to start its Teaching Phase.</p>' +
+      '<div class="btn-row" style="flex-direction:column;align-items:stretch;">' +
+      uniqueWords.map(w=>'<button type="button" class="btn ghost small add-unmatched-btn" data-w="'+Utils.escapeHtml(w)+'">＋ Add "'+Utils.escapeHtml(w)+'"</button>').join('') +
+      '</div><div class="btn-row" style="margin-top:10px;"><button type="button" class="btn ghost small" id="closeUnmatchedBtn">Close</button></div>',
+      (m)=>{
+        m.querySelectorAll('.add-unmatched-btn').forEach(btn=>{
+          btn.addEventListener('click', ()=>{
+            Modal.close();
+            App.showTab('add');
+            Views.renderAddForm({ word: btn.dataset.w, wordType:'general', meaning:'', form:'', grammar:'', collocations:[], contrast:'', contexts:[], production:'', mnemonic:'', pronunciation:'', cloze:[] });
+          });
+        });
+        m.querySelector('#closeUnmatchedBtn').addEventListener('click', ()=>Modal.close());
+      });
+  }
+};
+
+/* ============================== TIMED EXAM DEPLOYMENT ============================== */
+const Exam = {
+  PRESETS: [
+    'Discuss the advantages and disadvantages of remote work for young professionals.',
+    'Describe a time you had to make a difficult decision under pressure.',
+    'Argue for or against the increasing use of social media in schools.',
+    'Explain how technology has changed the way people communicate with one another.',
+    'Discuss whether cities should prioritize public transportation over private cars.'
+  ],
+  status: 'config', // config | running | review | done
+  prompt: '',
+  minutes: 20,
+  targetWords: [],
+  text: '',
+  remainingSec: 0,
+  timerHandle: null,
+  checklist: {}, // wordId -> {outcome, category}
+  lastRecord: null,
+  container: null,
+
+  render(container){
+    this.container = container;
+    if(!this.prompt) this.prompt = Utils.pick(this.PRESETS);
+    if(this.status==='config') this.drawConfig();
+    else if(this.status==='running') this.drawRunning();
+    else if(this.status==='review') this.drawReview();
+    else this.drawDone();
+  },
+
+  computeTargetPool(){
+    const eligible = Storage.state.words.filter(w=> w.teaching && w.teaching.completed &&
+      w.dims.independentProduction && w.dims.independentProduction.success>=1 &&
+      !WordModel.hasRecentError(w,7));
+    return Utils.shuffle(eligible).slice(0,8);
+  },
+
+  drawConfig(){
+    const pool = this.computeTargetPool();
+    this.targetWords = pool;
+    const el = this.container;
+    const presetMinutes = [15,20,30,45];
+    el.innerHTML = '<div class="card"><h2>⏱ Timed Exam Deployment</h2>' +
+      '<p class="field-hint">Simulate exam conditions: a prompt, a time limit, and target words pulled from your stable vocabulary. You don\'t have to use every word — write naturally.</p>' +
+      '<label>Writing prompt</label><textarea id="examPromptInput" rows="2">'+Utils.escapeHtml(this.prompt)+'</textarea>' +
+      '<div class="btn-row" style="margin-top:6px;"><button type="button" class="btn ghost small" id="shufflePromptBtn">🎲 New Prompt</button></div>' +
+      '<label>Time limit (minutes)</label>' +
+      '<div class="btn-row">' + presetMinutes.map(m=>'<button type="button" class="btn '+(this.minutes===m?'primary':'ghost')+' small min-btn" data-m="'+m+'">'+m+'</button>').join('') +
+      '<input type="number" id="customMinutes" min="1" max="180" placeholder="Custom" style="width:90px;" value="'+(presetMinutes.includes(this.minutes)?'':this.minutes)+'">' +
+      '</div>' +
+      '<label>Target vocabulary '+(pool.length? '('+pool.length+' selected — stable, no recent errors)':'')+'</label>' +
+      (pool.length ? '<div>'+pool.map(w=>'<span class="target-word-chip">'+Utils.escapeHtml(w.word)+'</span>').join('')+'</div>' :
+        '<div class="banner warn">⚠️ Not enough stable words yet (need Independent Production practice with no error in the last 7 days). You can still start with no target words, or teach/practice more words first.</div>') +
+      (pool.length ? '<div class="btn-row" style="margin-top:6px;"><button type="button" class="btn ghost small" id="reshuffleBtn">🔄 Reshuffle Words</button></div>' : '') +
+      '<div class="btn-row" style="margin-top:16px;"><button type="button" class="btn primary" id="startExamBtn">▶ Start Exam</button></div>' +
+      '</div>';
+
+    el.querySelector('#examPromptInput').addEventListener('input', (e)=>{ this.prompt = e.target.value; });
+    el.querySelector('#shufflePromptBtn').addEventListener('click', ()=>{ this.prompt = Utils.pick(this.PRESETS); this.drawConfig(); });
+    el.querySelectorAll('.min-btn').forEach(b=>b.addEventListener('click', ()=>{ this.minutes = +b.dataset.m; this.drawConfig(); }));
+    el.querySelector('#customMinutes').addEventListener('input', (e)=>{ const v=+e.target.value; if(v>0) this.minutes = v; });
+    const reshuffleBtn = el.querySelector('#reshuffleBtn');
+    if(reshuffleBtn) reshuffleBtn.addEventListener('click', ()=>this.drawConfig());
+    el.querySelector('#startExamBtn').addEventListener('click', ()=>this.start());
+  },
+
+  start(){
+    if(!this.prompt.trim()){ Utils.toast('Enter a writing prompt first.'); return; }
+    this.status='running';
+    this.text='';
+    this.remainingSec = Math.round(this.minutes*60);
+    this.checklist = {};
+    this.targetWords.forEach(w=>{ this.checklist[w.id] = { outcome:null, category:null }; });
+    this.drawRunning();
+    this.timerHandle = setInterval(()=>this.tick(), 1000);
+  },
+
+  tick(){
+    this.remainingSec--;
+    const display = document.getElementById('examTimerDisplay');
+    if(display){
+      display.textContent = this.fmtTime(this.remainingSec);
+      display.classList.toggle('low', this.remainingSec<=60);
+    }
+    if(this.remainingSec<=0){
+      clearInterval(this.timerHandle); this.timerHandle=null;
+      this.finishWriting();
+    }
+  },
+
+  fmtTime(sec){
+    sec = Math.max(0,sec);
+    const m = Math.floor(sec/60), s = sec%60;
+    return String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');
+  },
+
+  drawRunning(){
+    const el = this.container;
+    el.innerHTML = '<div class="card">' +
+      '<div class="exam-timer" id="examTimerDisplay">'+this.fmtTime(this.remainingSec)+'</div>' +
+      '<div class="teach-box"><h4>Prompt</h4><div>'+Utils.escapeHtml(this.prompt)+'</div></div>' +
+      (this.targetWords.length ? '<label>Target vocabulary <span class="opt">(use naturally — not required)</span></label><div>'+this.targetWords.map(w=>'<span class="target-word-chip">'+Utils.escapeHtml(w.word)+'</span>').join('')+'</div>' : '') +
+      '<label>Your writing</label><textarea id="examTextArea" rows="14" placeholder="Start writing…">'+Utils.escapeHtml(this.text)+'</textarea>' +
+      '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn bad" id="finishNowBtn">Finish Now</button></div>' +
+      '</div>';
+    const ta = el.querySelector('#examTextArea');
+    ta.addEventListener('input', ()=>{ this.text = ta.value; });
+    ta.focus();
+    el.querySelector('#finishNowBtn').addEventListener('click', ()=>{
+      Modal.confirm('Finish the exam now? The timer will stop and you\'ll move to the review checklist.', ()=>{
+        clearInterval(this.timerHandle); this.timerHandle=null;
+        this.finishWriting();
+      });
+    });
+  },
+
+  finishWriting(){
+    this.status='review';
+    this.render(this.container);
+  },
+
+  drawReview(){
+    const el = this.container;
+    let html = '<div class="card"><h2>Time\'s Up — Review</h2>' +
+      '<p class="field-hint">Writing area is now locked. For each target word, mark how it went — "Did not use" is not an error.</p>' +
+      '<div class="essay-preview">'+Utils.escapeHtml(this.text || '(nothing written)')+'</div></div>';
+
+    if(this.targetWords.length===0){
+      html += '<div class="card"><p class="field-hint">No target words were assigned to this exam.</p>' +
+        '<button type="button" class="btn primary" id="submitReviewBtn">Finish</button></div>';
+    } else {
+      html += '<div class="card">' + this.targetWords.map(w=>{
+        const c = this.checklist[w.id];
+        return '<div class="checklist-item" data-id="'+w.id+'">' +
+          '<div class="w">'+Utils.escapeHtml(w.word)+'</div>' +
+          '<div class="checklist-row">' +
+          '<button type="button" class="outcome-btn '+(c.outcome==='correct'?'picked-correct':'')+'" data-o="correct">✓ Used correctly</button>' +
+          '<button type="button" class="outcome-btn '+(c.outcome==='incorrect'?'picked-incorrect':'')+'" data-o="incorrect">✗ Used incorrectly</button>' +
+          '<button type="button" class="outcome-btn '+(c.outcome==='none'?'picked-none':'')+'" data-o="none">— Did not use</button>' +
+          '</div>' +
+          '<div class="cat-wrap" style="margin-top:10px;'+(c.outcome==='incorrect'?'':'display:none;')+'">' +
+          '<div class="error-cats">' + ERROR_CATEGORIES.map(cat=>'<button type="button" data-c="'+cat+'" class="'+(c.category===cat?'picked':'')+'">'+cat+'</button>').join('') + '</div>' +
+          '</div></div>';
+      }).join('') +
+      '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn primary" id="submitReviewBtn" disabled>Submit Review</button></div>' +
+      '</div>';
+    }
+    el.innerHTML = html;
+
+    const submitBtn = el.querySelector('#submitReviewBtn');
+    const checkReady = ()=>{
+      const ready = this.targetWords.every(w=>{
+        const c = this.checklist[w.id];
+        if(!c.outcome) return false;
+        if(c.outcome==='incorrect' && !c.category) return false;
+        return true;
+      });
+      if(submitBtn) submitBtn.disabled = !ready;
+    };
+    el.querySelectorAll('.checklist-item').forEach(item=>{
+      const wid = item.dataset.id;
+      item.querySelectorAll('.outcome-btn').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          this.checklist[wid].outcome = btn.dataset.o;
+          if(btn.dataset.o!=='incorrect') this.checklist[wid].category = null;
+          this.drawReview();
+        });
+      });
+      item.querySelectorAll('.cat-wrap button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          this.checklist[wid].category = btn.dataset.c;
+          this.drawReview();
+        });
+      });
+    });
+    checkReady();
+    if(this.targetWords.length===0){
+      el.querySelector('#submitReviewBtn').addEventListener('click', ()=>this.submitReview());
+    } else if(submitBtn){
+      submitBtn.addEventListener('click', ()=>this.submitReview());
+    }
+  },
+
+  submitReview(){
+    const record = { ts: Date.now(), date: Utils.todayISO(), prompt: this.prompt, minutes: this.minutes, text: this.text, targetWords: [] };
+    this.targetWords.forEach(w=>{
+      const c = this.checklist[w.id];
+      record.targetWords.push({ word: w.word, wordId: w.id, outcome: c.outcome, category: c.category||null });
+      if(c.outcome==='correct') ErrorIntegration.recordProductionSuccess(w, 'timed-exam');
+      else if(c.outcome==='incorrect') ErrorIntegration.recordProductionError(w, c.category, 'timed-exam');
+      // 'none' (did not use): no mastery change, no error logged
+    });
+    Storage.state.examLog.push(record);
+    Storage.save();
+    this.status='done';
+    this.lastRecord = record;
+    this.render(this.container);
+  },
+
+  drawDone(){
+    const r = this.lastRecord;
+    const correct = r.targetWords.filter(t=>t.outcome==='correct').length;
+    const incorrect = r.targetWords.filter(t=>t.outcome==='incorrect').length;
+    const notUsed = r.targetWords.filter(t=>t.outcome==='none').length;
+    this.container.innerHTML = '<div class="card center"><h2>🎉 Exam Reviewed</h2>' +
+      '<div class="grid" style="margin:14px 0;">' +
+      '<div class="stat good"><div class="num">'+correct+'</div><div class="label">Used Correctly</div></div>' +
+      '<div class="stat bad"><div class="num">'+incorrect+'</div><div class="label">Used Incorrectly</div></div>' +
+      '<div class="stat"><div class="num">'+notUsed+'</div><div class="label">Not Used</div></div>' +
+      '</div>' +
+      (incorrect ? '<p class="field-hint">'+incorrect+' word(s) were scheduled for targeted retrieval practice.</p>' : '') +
+      '<button type="button" class="btn primary" id="newExamBtn">Start Another Exam</button></div>';
+    this.container.querySelector('#newExamBtn').addEventListener('click', ()=>{
+      this.status='config'; this.prompt=''; this.text=''; this.checklist={};
+      this.render(this.container);
+    });
+  }
+};
+
+/* ============================== ANALYTICS ============================== */
+const Analytics = {
+  charts: {},
+
+  ACHIEVEMENTS: [
+    { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1 },
+    { id:'vocab_builder', icon:'📚', name:'Vocabulary Builder', desc:'Complete teaching for 10 words.', check: ctx=>ctx.taughtCount>=10 },
+    { id:'scholar', icon:'🎓', name:'Scholar', desc:'Complete teaching for 50 words.', check: ctx=>ctx.taughtCount>=50 },
+    { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5 },
+    { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1 },
+    { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10 },
+    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7 },
+    { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1 }
+  ],
+
+  render(){
+    const el = document.getElementById('view-analytics');
+    this.destroyCharts();
+
+    if(typeof Chart === 'undefined'){
+      el.innerHTML = this.renderAchievementsSection() +
+        '<div class="card empty-state"><div class="big">📡</div><h2>Charts unavailable</h2>' +
+        '<p>Chart.js could not be loaded (no cached copy while offline). Everything else in the app still works.</p></div>';
+      return;
+    }
+
+    const words = Storage.state.words;
+    let html = this.renderAchievementsSection();
+
+    if(words.length===0){
+      html += '<div class="card empty-state"><div class="big">📊</div><h2>No chart data yet</h2><p>Add and practice some words to unlock the analytics charts.</p></div>';
+      el.innerHTML = html;
+      return;
+    }
+
+    html += '<div class="analytics-grid">' +
+      '<div class="chart-card"><h3>Words Learned Over Time</h3><div class="chart-sub">Cumulative words added</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Current Mastery Distribution</h3><div class="chart-sub">Across '+words.length+' word(s)</div><div class="chart-wrap"><canvas id="chartMastery"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged errors by category</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
+      '</div>';
+    el.innerHTML = html;
+
+    const css = getComputedStyle(document.documentElement);
+    const dimColor = css.getPropertyValue('--text-dim').trim() || '#565F52';
+    const gridColor = css.getPropertyValue('--border').trim() || '#C9C3AE';
+    Chart.defaults.color = dimColor;
+    Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
+
+    this.renderProgressChart(gridColor);
+    this.renderMasteryChart();
+    this.renderForecastChart(gridColor);
+    this.renderErrorChart(gridColor);
+  },
+
+  destroyCharts(){
+    Object.keys(this.charts).forEach(k=>{ if(this.charts[k]) this.charts[k].destroy(); });
+    this.charts = {};
+  },
+
+  computeStreak(){
+    const dates = new Set((Storage.state.sessionLog||[]).map(s=>s.date));
+    if(dates.size===0) return 0;
+    let streak = 0;
+    let cursor = Utils.todayISO();
+    if(!dates.has(cursor)) cursor = Utils.addDays(cursor, -1);
+    while(dates.has(cursor)){ streak++; cursor = Utils.addDays(cursor, -1); }
+    return streak;
+  },
+
+  renderAchievementsSection(){
+    const words = Storage.state.words;
+    const taughtCount = words.filter(w=>w.teaching && w.teaching.completed).length;
+    const examReadyCount = words.filter(w=>WordModel.computeMastery(w)==='Exam Ready').length;
+    const totalAttempts = words.reduce((sum,w)=>sum+w.history.length, 0);
+    const totalCorrect = words.reduce((sum,w)=>sum+w.history.filter(h=>h.correct).length, 0);
+    const accuracy = totalAttempts ? Math.round(totalCorrect/totalAttempts*100) : 0;
+    const streak = this.computeStreak();
+    const errorLogCount = Storage.state.errorLog.length;
+    const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;
+
+    const ctx = { taughtCount, examReadyCount, streak, errorLogCount, writingSessions };
+
+    const cards = this.ACHIEVEMENTS.map(a=>{
+      const unlocked = a.check(ctx);
+      return '<div class="achv-card '+(unlocked?'unlocked':'locked')+'">' +
+        '<div class="icon">'+a.icon+'</div>' +
+        '<div class="name">'+Utils.escapeHtml(a.name)+'</div>' +
+        '<div class="desc">'+Utils.escapeHtml(a.desc)+'</div>' +
+        (unlocked?'':'<div class="lock">🔒 Locked</div>') +
+        '</div>';
+    }).join('');
+
+    return '<div class="card">' +
+      '<div class="streak-banner"><span class="flame">🔥</span> '+streak+'-day study streak</div>' +
+      '<div class="achv-stats-grid" style="margin-top:14px;">' +
+      '<div class="stat"><div class="num">'+streak+'</div><div class="label">Study Streak</div></div>' +
+      '<div class="stat"><div class="num">'+totalAttempts+'</div><div class="label">Practice Attempts</div></div>' +
+      '<div class="stat '+(accuracy>=80?'good':accuracy>0&&accuracy<50?'bad':'')+'"><div class="num">'+accuracy+'%</div><div class="label">Accuracy Rate</div></div>' +
+      '<div class="stat good"><div class="num">'+examReadyCount+'</div><div class="label">Exam Ready</div></div>' +
+      '</div>' +
+      '<h3 style="margin-top:18px;">🏆 Achievements</h3>' +
+      '<div class="achv-scroll">' + cards + '</div>' +
+      '</div>';
+  },
+
+  buildLearningProgressData(){
+    const words = Storage.state.words;
+    const createdDates = words.map(w=>w.created).filter(Boolean).sort();
+    const today = Utils.todayISO();
+    const earliest = createdDates[0] || today;
+    const spanDays = Utils.diffDays(earliest, today);
+    const start = spanDays < 29 ? earliest : Utils.addDays(today, -29);
+    const labels = [], data = [];
+    let cursor = start;
+    let guard = 0;
+    while(cursor <= today && guard < 400){
+      labels.push(cursor);
+      data.push(words.filter(w=>w.created<=cursor).length);
+      cursor = Utils.addDays(cursor, 1);
+      guard++;
+    }
+    return { labels, data };
+  },
+
+  renderProgressChart(gridColor){
+    const { labels, data } = this.buildLearningProgressData();
+    this.charts.progress = new Chart(document.getElementById('chartProgress'), {
+      type: 'line',
+      data: {
+        labels: labels.map(d=>Utils.fmtDate(d)),
+        datasets: [{
+          label: 'Words Learned',
+          data,
+          borderColor: '#A8402F',
+          backgroundColor: 'rgba(168,64,47,.16)',
+          fill: true,
+          tension: .3,
+          pointRadius: labels.length>20 ? 0 : 3
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, title: { display: true, text: 'Words Learned Over Time' } },
+        scales: {
+          x: { grid: { color: gridColor }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+          y: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } }
+        }
+      }
+    });
+  },
+
+  renderMasteryChart(){
+    const words = Storage.state.words;
+    const stages = ['New','Learning','Unstable','Stable','Exam Ready'];
+    const colors = ['#A39B7E','#A8402F','#EFC94C','#7C8768','#232A3B'];
+    const counts = stages.map(s=>words.filter(w=>WordModel.computeMastery(w)===s).length);
+    const total = words.length;
+    this.charts.mastery = new Chart(document.getElementById('chartMastery'), {
+      type: 'doughnut',
+      data: {
+        labels: stages.map((s,i)=>s+' — '+counts[i]+' ('+(total?Math.round(counts[i]/total*100):0)+'%)'),
+        datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0 }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: {
+          legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
+          title: { display: true, text: 'Current Mastery Distribution' }
+        }
+      }
+    });
+  },
+
+  renderForecastChart(gridColor){
+    const buckets = [1,3,7,14,30];
+    const taught = Storage.state.words.filter(w=>w.teaching && w.teaching.completed && !WordModel.isNew(w));
+    const today = Utils.todayISO();
+    const counts = buckets.map(n=>taught.filter(w=>Utils.diffDays(today, w.srs.nextReview)<=n).length);
+    this.charts.forecast = new Chart(document.getElementById('chartForecast'), {
+      type: 'bar',
+      data: { labels: buckets.map(n=>'Next '+n+'d'), datasets: [{ label: 'Words due', data: counts, backgroundColor: '#7C8768', borderRadius: 2 }] },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, title: { display: true, text: 'Upcoming Review Load' } },
+        scales: { x: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } }, y: { grid: { display: false } } }
+      }
+    });
+  },
+
+  renderErrorChart(gridColor){
+    const totals = ERROR_CATEGORIES.map(c=>Storage.state.errorLog.filter(e=>e.category===c).length);
+    const colors = ['#A8402F','#7C8768','#EFC94C','#232A3B','#C97B4A','#5B7065','#8A6A18'];
+    this.charts.errors = new Chart(document.getElementById('chartErrors'), {
+      type: 'bar',
+      data: { labels: ERROR_CATEGORIES, datasets: [{ label: 'Errors', data: totals, backgroundColor: colors, borderRadius: 2 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, title: { display: true, text: 'Weakest Vocabulary Dimensions' } },
+        scales: { x: { grid: { display: false } }, y: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } } }
+      }
+    });
+  }
+};
+
+/* ============================== DAILY SESSION FLOW ============================== */
+const Session = {
+  active: false,
+  phase: 0,
+  phases: ['Retrieval Review','New Vocabulary','Context / Production','Error Review'],
+  log: { reviewed:0, correct:0, newAdded:0, errors:0 },
+
+  start(){
+    this.active = true; this.phase = 0;
+    this.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
+    App.showTab('practice');
+    this.renderPhase();
+  },
+
+  renderPhase(){
+    const el = document.getElementById('view-practice');
+    const nav = '<div class="session-phase-nav">' + this.phases.map((p,i)=>
+      '<span class="dot '+(i<this.phase?'done':i===this.phase?'active':'')+'"></span>').join('') + '</div>';
+
+    if(this.phase===0){
+      const queue = Practice.buildDueQueue({includeNew:false});
+      el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 1 · Retrieval Review</h2>' +
+        '<p class="field-hint">'+queue.length+' word(s) due or overdue. Aim for ~10–15 minutes.</p>' +
+        '<div class="btn-row" style="justify-content:center;">' +
+        (queue.length ? '<button class="btn primary" id="beginBtn">Begin</button>' : '') +
+        '<button class="btn ghost" id="skipBtn">'+(queue.length?'Skip Phase':'Nothing due — Continue')+'</button></div></div></div>';
+      el.querySelector('#skipBtn').addEventListener('click', ()=>this.nextPhase());
+      const b = el.querySelector('#beginBtn');
+      if(b) b.addEventListener('click', ()=>{
+        Practice.session = { queue, idx:0, results:[], mode:'session' };
+        Practice.persist();
+        Views.renderPracticeCard();
+      });
+    } else if(this.phase===1){
+      el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 2 · New Vocabulary</h2>' +
+        '<p class="field-hint">Add as many (or as few) new words as feels right — there\'s no fixed quota. Build a full Production Record for each.</p>' +
+        '<div class="btn-row" style="justify-content:center;"><button class="btn primary" id="addNowBtn">Add a Word</button><button class="btn ghost" id="contBtn">Continue to Next Phase</button></div>' +
+        '<div class="field-hint" style="margin-top:10px;">Added this session: '+this.log.newAdded+'</div></div></div>';
+      el.querySelector('#addNowBtn').addEventListener('click', ()=>{
+        App.currentTab='add';
+        document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+        document.getElementById('view-add').classList.add('active');
+        document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='add'));
+        Views.renderAddForm();
+        const origRenderBeginTeaching = Views.renderBeginTeaching.bind(Views);
+        const origHandler = Views.handleSaveWord.bind(Views);
+        const backToSession = ()=>{
+          Views.handleSaveWord = origHandler;
+          Views.renderBeginTeaching = origRenderBeginTeaching;
+          App.currentTab='practice';
+          document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+          document.getElementById('view-practice').classList.add('active');
+          document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='practice'));
+          Session.renderPhase();
+        };
+        Views.handleSaveWord = function(form, existing){
+          const before = Storage.state.words.length;
+          origHandler(form, existing);
+          if(Storage.state.words.length>before) Session.log.newAdded++;
+        };
+        Views.renderBeginTeaching = function(words, onAllComplete){
+          origRenderBeginTeaching(words, backToSession);
+        };
+      });
+      el.querySelector('#contBtn').addEventListener('click', ()=>this.nextPhase());
+    } else if(this.phase===2){
+      const queue = Practice.buildProductionQueue(6);
+      el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 3 · Context / Production</h2>' +
+        '<p class="field-hint">'+queue.length+' drill(s) ready — varied contexts, collocations, and registers.</p>' +
+        '<div class="btn-row" style="justify-content:center;">' +
+        (queue.length?'<button class="btn primary" id="beginBtn">Begin</button>':'') +
+        '<button class="btn ghost" id="skipBtn">'+(queue.length?'Skip Phase':'Continue')+'</button></div></div></div>';
+      el.querySelector('#skipBtn').addEventListener('click', ()=>this.nextPhase());
+      const b = el.querySelector('#beginBtn');
+      if(b) b.addEventListener('click', ()=>{
+        Practice.session = { queue, idx:0, results:[], mode:'session' };
+        Practice.persist();
+        Views.renderPracticeCard();
+      });
+    } else if(this.phase===3){
+      const queue = Storage.state.words.filter(w=>{
+        const today = Utils.todayISO();
+        const erroredToday = Object.keys(w.errorCounts||{}).length>0 && Storage.state.errorLog.some(e=>e.wordId===w.id && e.date===today);
+        if(!erroredToday) return false;
+        const last = w.history[w.history.length-1];
+        const resolvedSinceError = last && last.date===today && last.correct;
+        return !resolvedSinceError;
+      }).map(w=>({word:w, level:Math.max(2,w.levelState.level-1)}));
+      el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 4 · Error Review</h2>' +
+        '<p class="field-hint">'+queue.length+' word(s) had errors today — revisit at a slightly easier level to restore success.</p>' +
+        '<div class="btn-row" style="justify-content:center;">' +
+        (queue.length?'<button class="btn primary" id="beginBtn">Begin</button>':'') +
+        '<button class="btn ghost" id="finishBtn">'+(queue.length?'Skip & Finish':'Finish Session')+'</button></div></div></div>';
+      el.querySelector('#finishBtn').addEventListener('click', ()=>this.finish());
+      const b = el.querySelector('#beginBtn');
+      if(b) b.addEventListener('click', ()=>{
+        Practice.session = { queue, idx:0, results:[], mode:'session' };
+        Practice.persist();
+        Views.renderPracticeCard();
+      });
+    }
+  },
+
+  finishPhase(results){
+    results.forEach(r=>{ this.log.reviewed++; if(r.correct) this.log.correct++; else this.log.errors++; });
+    if(this.phase===3){ this.finish(); }
+    else this.nextPhase();
+  },
+
+  nextPhase(){
+    this.phase++;
+    if(this.phase>=this.phases.length){ this.finish(); return; }
+    this.renderPhase();
+  },
+
+  finish(){
+    this.active = false;
+    Storage.state.sessionLog.push({ ts: Date.now(), date: Utils.todayISO(), summary: Object.assign({}, this.log) });
+    Storage.save();
+    const el = document.getElementById('view-practice');
+    el.innerHTML = '<div class="card center"><h2>🎉 Session Complete</h2>' +
+      '<div class="grid" style="margin:16px 0;">' +
+      '<div class="stat"><div class="num">'+this.log.reviewed+'</div><div class="label">Items Reviewed</div></div>' +
+      '<div class="stat good"><div class="num">'+this.log.correct+'</div><div class="label">Correct</div></div>' +
+      '<div class="stat bad"><div class="num">'+this.log.errors+'</div><div class="label">Errors</div></div>' +
+      '<div class="stat"><div class="num">'+this.log.newAdded+'</div><div class="label">Words Added</div></div>' +
+      '</div><button class="btn primary" id="backBtn">Back to Dashboard</button></div>';
+    el.querySelector('#backBtn').addEventListener('click', ()=>App.showTab('dashboard'));
+  }
+};
+
+/* ============================== TEACHING PHASE ============================== */
+function showTeachingView(){
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-teaching').classList.add('active');
+  document.querySelectorAll('#tabs button').forEach(b=>b.classList.remove('active'));
+}
+
+const STEP_NAMES = ['','Introduce the Word','Core Meaning','Contextual Examples','Guided Processing','Supported Retrieval','Constrained Production','Independent Production','Entering Retrieval'];
+
+const Teaching = {
+  state: null,
+  queue: [],
+  queueIdx: 0,
+  onAllComplete: null,
+
+  startQueue(words, onAllComplete){
+    words = words.filter(Boolean);
+    if(words.length===0){ if(onAllComplete) onAllComplete(); return; }
+    this.queue = words.slice();
+    this.queueIdx = 0;
+    this.onAllComplete = onAllComplete;
+    this._next();
+  },
+
+  _next(){
+    if(this.queueIdx >= this.queue.length){
+      const cb = this.onAllComplete;
+      this.queue = []; this.queueIdx = 0; this.onAllComplete = null;
+      if(cb) cb();
+      return;
+    }
+    this.start(this.queue[this.queueIdx]);
+  },
+
+  start(word){
+    const step = (word.teaching && word.teaching.currentStep) || 1;
+    this.state = { word, step, retry:0, inputs:{} };
+    word.teaching.currentStep = step;
+    Storage.save();
+    this.render();
+  },
+
+  goStep(n){
+    this.state.step = n;
+    this.state.retry = 0;
+    this.state.word.teaching.currentStep = Math.max(this.state.word.teaching.currentStep||1, Math.min(n,8));
+    Storage.save();
+    this.render();
+  },
+
+  /* Navigates to the previous step. Cached generated content (state.stepXData) and
+     typed input values (state.inputs) are preserved; word.teaching.currentStep only
+     ever tracks the furthest step reached, so stepping back never re-opens skipping. */
+  goBack(){
+    if(!this.state || this.state.step<=1) return;
+    this.goStep(this.state.step-1);
+  },
+
+  /* Restores a cached value into an input/textarea (if any was saved for `key`) and
+     wires it to keep caching on every keystroke, so Back → Forward restores the text. */
+  _cacheInput(el, key){
+    if(!el) return;
+    if(this.state.inputs[key]!=null) el.value = this.state.inputs[key];
+    el.addEventListener('input', ()=>{ this.state.inputs[key] = el.value; });
+  },
+
+  finishWord(){
+    const word = this.state.word;
+    word.teaching.completed = true;
+    word.teaching.currentStep = 8;
+    word.srs.nextReview = Utils.todayISO();
+    Storage.save();
+    Utils.toast('"'+word.word+'" is ready for retrieval practice.');
+    this.state = null;
+    this.queueIdx++;
+    this._next();
+  },
+
+  render(){
+    showTeachingView();
+    const el = document.getElementById('view-teaching');
+    const s = this.state, word = s.word;
+    const pct = Math.round(((Math.min(s.step,8)-1)/7)*100);
+    let body = '';
+    if(s.step===1) body = this.renderStep1();
+    else if(s.step===2) body = this.renderStep2();
+    else if(s.step===3) body = this.renderStep3();
+    else if(s.step===4) body = this.renderStep4();
+    else if(s.step===5) body = this.renderStep5();
+    else if(s.step===6) body = this.renderStep6();
+    else if(s.step===7) body = this.renderStep7();
+    else body = this.renderCompletion();
+
+    const queueNote = this.queue.length>1 ? ' · word '+(this.queueIdx+1)+' of '+this.queue.length : '';
+    const showBack = s.step>1;
+    const backRow = showBack ? '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button type="button" class="btn ghost small" id="teachBackBtn">← Back</button></div>' : '';
+    el.innerHTML = '<div class="practice-wrap">' +
+      '<div class="step-progress-wrap"><div class="practice-progress">Teaching &ldquo;'+Utils.escapeHtml(word.word)+'&rdquo;'+queueNote+' — Step '+Math.min(s.step,8)+' of 8: '+STEP_NAMES[Math.min(s.step,8)]+'</div>' +
+      '<div class="step-progress-track"><div class="step-progress-fill" style="width:'+pct+'%"></div></div></div>' +
+      '<div class="practice-card" id="teachCard">' + body + backRow + '</div></div>';
+    this._wireCurrentStep();
+    if(showBack){
+      const backBtn = document.getElementById('teachBackBtn');
+      if(backBtn) backBtn.addEventListener('click', ()=>this.goBack());
+    }
+  },
+
+  /* ---- Step 1: Introduce ---- */
+  renderStep1(){
+    const word = this.state.word;
+    let note = '';
+    if(word.wordType==='concreteNoun') note = '<div class="teach-note">🖼️ Before continuing, picture a typical example of "'+Utils.escapeHtml(word.word)+'" in your mind.</div>';
+    else if(word.wordType==='polysemous') note = '<div class="teach-note">This word has more than one sense. This lesson focuses on one specific sense — others exist but aren\'t the focus here.</div>';
+    else if(word.wordType==='nearSynonym') note = '<div class="teach-note">This word has close near-synonyms — pay special attention to the Contrast in the next step.</div>';
+    return '<div class="teach-step-label">Step 1 · Introduce the Word</div>' +
+      '<div class="teach-headword-row">' +
+      '<div class="teach-headword">'+Utils.escapeHtml(word.word)+'</div>' +
+      (word.pronunciation ? '<span class="pronunciation">('+Utils.escapeHtml(word.pronunciation)+')</span>' : '') +
+      '<button type="button" class="speak-btn" data-word="'+Utils.escapeHtml(word.word)+'" title="Listen">🔊</button>' +
+      '</div>' +
+      '<div class="teach-sub">'+Utils.escapeHtml(word.form||'(part of speech / word family not recorded)')+'</div>' +
+      note +
+      '<div class="btn-row" style="justify-content:center;margin-top:16px;"><button class="btn primary" id="nextBtn">Continue</button></div>';
+  },
+
+  /* ---- Step 2: Core meaning ---- */
+  renderStep2(){
+    const word = this.state.word;
+    const contrastBox = word.contrast ? '<div class="teach-box contrast"><h4>Contrast</h4><div>'+Utils.escapeHtml(word.contrast)+'</div></div>' : '';
+    return '<div class="teach-step-label">Step 2 · Core Meaning</div>' +
+      '<div class="teach-headword" style="font-size:20px;">'+Utils.escapeHtml(word.word)+'</div>' +
+      '<div class="teach-box emph"><h4>Core Meaning</h4><div style="font-size:15px;font-weight:600;">'+Utils.escapeHtml(word.meaning)+'</div></div>' +
+      contrastBox +
+      (word.wordType==='abstractVerb' ? '<div class="teach-note">Abstract words like this are learned through definition + contrast + grammar, not imagery — focus on the boundary above.</div>' : '') +
+      '<div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="nextBtn">Continue</button></div>';
+  },
+
+  /* ---- Step 3: Contextual examples ---- */
+  renderStep3(){
+    const word = this.state.word;
+    const contexts = word.contexts.map(c=>'<li>'+Utils.escapeHtml(c)+'</li>').join('');
+    const colloc = word.collocations.length ? '<div class="teach-box"><h4>Collocations</h4><div>'+word.collocations.map(c=>'<span class="badge" style="margin:2px;">'+Utils.escapeHtml(c)+'</span>').join(' ')+'</div></div>' : '';
+    const sentences = (word.cloze||[]).concat(word.production ? [word.production] : []).filter(Boolean);
+    const wb = new RegExp('\\b'+Utils.escapeRegex(word.word)+'\\b','ig');
+    const examples = sentences.length ? '<div class="teach-box"><h4>Example Sentences</h4><ul class="teach-list">' +
+      sentences.map(s=>'<li>'+Utils.escapeHtml(s).replace(wb, m=>'<b>'+m+'</b>')+'</li>').join('') + '</ul></div>' : '';
+    return '<div class="teach-step-label">Step 3 · Contextual Examples</div>' +
+      '<div class="teach-box"><h4>Typical Contexts</h4><ul class="teach-list">'+contexts+'</ul>' +
+      '<div class="field-hint" style="margin-top:6px;">Grammar pattern: '+Utils.escapeHtml(word.grammar||'—')+'</div></div>' +
+      colloc +
+      examples +
+      '<div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="nextBtn">Continue</button></div>';
+  },
+
+  /* ---- Step 4: Guided processing ---- */
+  genStep4(){
+    if(this.state.step4Data) return this.state.step4Data;
+    const word = this.state.word;
+    const types = ['mcq','explain'];
+    if(WordModel.getClozeSentence(word)) types.push('cloze');
+    const type = Utils.pick(types);
+    const data = { type };
+    if(type==='mcq'){
+      const others = Storage.state.words.filter(w=>w.id!==word.id && w.production);
+      let incorrectText = null;
+      if(others.length){
+        const other = Utils.pick(others);
+        const re = new RegExp('\\b'+Utils.escapeRegex(other.word)+'\\b','i');
+        if(re.test(other.production)) incorrectText = other.production.replace(re, word.word);
+      }
+      if(!incorrectText) incorrectText = 'Yesterday she decided to ' + word.word + ' the ' + (word.form.toLowerCase().includes('noun')?'idea':'meeting') + ' without any reason.';
+      data.options = Utils.shuffle([{ text: word.production, correct:true }, { text: incorrectText, correct:false }]);
+    } else if(type==='cloze'){
+      data.cloze = WordModel.getClozeSentence(word);
+    }
+    this.state.step4Data = data;
+    return data;
+  },
+  renderStep4(){
+    const word = this.state.word;
+    const data = this.genStep4();
+    let inner;
+    if(data.type==='mcq'){
+      inner = '<div class="practice-sub">Which sentence uses "'+Utils.escapeHtml(word.word)+'" correctly?</div>' +
+        '<div class="mcq-options" id="mcqOptions">' + data.options.map(o=>'<button>'+Utils.escapeHtml(o.text)+'</button>').join('') + '</div>';
+    } else if(data.type==='explain'){
+      inner = '<div class="practice-sub">Explain "'+Utils.escapeHtml(word.word)+'" in your own words.</div>' +
+        '<div class="answer-input"><textarea id="explainInput" rows="2" placeholder="Your explanation…"></textarea>' +
+        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="explainSubmit">Check My Understanding</button></div></div>';
+    } else {
+      inner = '<div class="practice-sub">Complete the sentence:</div>' +
+        '<div class="practice-prompt">'+Utils.escapeHtml(data.cloze.display).replace('_____','<span class="blank">_____</span>')+'</div>' +
+        '<div class="answer-input"><input type="text" id="clozeInput" autocomplete="off" spellcheck="false" placeholder="Type the missing word…">' +
+        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="clozeSubmit">Check</button></div></div>';
+    }
+    return '<div class="teach-step-label">Step 4 · Guided Processing</div>' + inner + '<div id="teachFeedback"></div>';
+  },
+  wireStep4(){
+    const data = this.state.step4Data;
+    const word = this.state.word;
+    if(data.type==='mcq'){
+      const btns = Array.from(document.querySelectorAll('#mcqOptions button'));
+      btns.forEach((btn,i)=>{
+        btn.addEventListener('click', ()=>{
+          btns.forEach(b=>b.disabled=true);
+          const opt = data.options[i];
+          btn.classList.add(opt.correct?'correct':'incorrect');
+          if(!opt.correct){
+            const correctIdx = data.options.findIndex(o=>o.correct);
+            btns[correctIdx].classList.add('correct');
+          }
+          this.handleStepOutcome(opt.correct, { dims:['meaningRecognition','contextualComprehension'], correctAnswerText: data.options.find(o=>o.correct).text });
+        });
+      });
+    } else if(data.type==='explain'){
+      this._cacheInput(document.getElementById('explainInput'), 'step4_explain');
+      document.getElementById('explainSubmit').addEventListener('click', ()=>{
+        const feedbackEl = document.getElementById('teachFeedback');
+        feedbackEl.innerHTML = '<div class="teach-box"><h4>Core Meaning (compare)</h4><div>'+Utils.escapeHtml(word.meaning)+'</div></div>' +
+          '<div class="practice-sub">Did your explanation capture this correctly?</div>' +
+          '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">Not quite</button></div>';
+        feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['meaningRecall','semanticDiscrimination'], successMsg:'Good — that matches the core meaning.' }));
+        feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.meaning }));
+      });
+    } else {
+      const input = document.getElementById('clozeInput');
+      this._cacheInput(input, 'step4_cloze');
+      const submit = ()=>{
+        const val = input.value.trim();
+        if(!val) return;
+        const correct = Utils.normalize(val)===Utils.normalize(data.cloze.answer);
+        this.handleStepOutcome(correct, { dims:['contextualComprehension','meaningRecognition'], correctAnswerText: data.cloze.answer });
+      };
+      document.getElementById('clozeSubmit').addEventListener('click', submit);
+      input.addEventListener('keydown', e=>{ if(e.key==='Enter') submit(); });
+      input.focus();
+    }
+  },
+
+  /* ---- Step 5: Supported retrieval ---- */
+  genStep5(){
+    if(this.state.step5Data) return this.state.step5Data;
+    const word = this.state.word;
+    const cueOptions = ['Meaning: ' + word.meaning];
+    if(word.contexts.length) cueOptions.push('Context: ' + Utils.pick(word.contexts));
+    const cue = Utils.pick(cueOptions);
+    this.state.step5Data = { cue, hintLevel: 0 };
+    return this.state.step5Data;
+  },
+  renderStep5(){
+    const word = this.state.word;
+    const needsSpellFirst = word.wordType==='difficultSpelling' && !this.state.spellDone;
+    if(needsSpellFirst){
+      return '<div class="teach-step-label">Step 5 · Supported Retrieval — Spelling Check</div>' +
+        '<div class="practice-sub">This word has tricky spelling. Study it, then type it from memory.</div>' +
+        '<div class="teach-headword">'+Utils.escapeHtml(word.word)+'</div>' +
+        '<div class="answer-input"><input type="text" id="spellInput" autocomplete="off" spellcheck="false" placeholder="Now type it from memory…">' +
+        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="spellSubmit">Check Spelling</button></div></div>' +
+        '<div id="teachFeedback"></div>';
+    }
+    const data = this.genStep5();
+    return '<div class="teach-step-label">Step 5 · Supported Retrieval</div>' +
+      '<div class="practice-sub">Cue — '+Utils.escapeHtml(data.cue)+'</div>' +
+      '<div class="answer-input"><input type="text" id="retrieveInput" autocomplete="off" spellcheck="false" placeholder="Type the word…">' +
+      '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="retrieveSubmit">Check</button></div></div>' +
+      '<div id="teachFeedback"></div>';
+  },
+  wireStep5(){
+    const word = this.state.word;
+    if(word.wordType==='difficultSpelling' && !this.state.spellDone){
+      const input = document.getElementById('spellInput');
+      this._cacheInput(input, 'step5_spell');
+      document.getElementById('spellSubmit').addEventListener('click', ()=>{
+        const val = input.value.trim();
+        const correct = Utils.normalize(val)===Utils.normalize(word.word);
+        this.state.spellDone = true;
+        DimModel.record(word, 'formRecall', correct);
+        if(!correct) WordModel.logError(word, 'Spelling', 0);
+        WordModel.logAttempt(word, 0, correct, { phase:'teaching', step:5, part:'spelling' });
+        Storage.save();
+        const feedbackEl = document.getElementById('teachFeedback');
+        feedbackEl.innerHTML = (correct ? '<div class="feedback correct">✓ Spelled correctly.</div>' : '<div class="feedback incorrect">Correct spelling: <b>'+Utils.escapeHtml(word.word)+'</b></div>') +
+          '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="spellContinueBtn">Continue</button></div>';
+        document.getElementById('spellContinueBtn').addEventListener('click', ()=>this.render());
+      });
+      input.focus();
+      return;
+    }
+    const data = this.state.step5Data;
+    const input = document.getElementById('retrieveInput');
+    this._cacheInput(input, 'step5_retrieve');
+    const submit = document.getElementById('retrieveSubmit');
+    const feedbackEl = document.getElementById('teachFeedback');
+    const hints = [
+      'Grammatical clue: ' + (word.grammar || '(no grammar note available)'),
+      'Semantic clue: ' + word.meaning,
+      'First letter: ' + word.word[0].toUpperCase(),
+      'Partial form: ' + word.word[0] + '_'.repeat(Math.max(1, word.word.length-2)) + word.word.slice(-1),
+      'Answer: ' + word.word
+    ];
+    const doCheck = ()=>{
+      const val = input.value.trim();
+      if(!val) return;
+      const correct = Utils.normalize(val)===Utils.normalize(word.word);
+      if(correct){
+        input.disabled = true; submit.disabled = true;
+        this.handleStepOutcome(true, { dims:['formRecall','meaningRecall'], successMsg:'Retrieved successfully.', askCategoryOnSuccess: data.hintLevel>0 });
+      } else {
+        if(data.hintLevel < hints.length) data.hintLevel++;
+        WordModel.logAttempt(word, 0, false, { phase:'teaching', step:5 });
+        Storage.save();
+        const ladder = '<div class="hint-ladder">' + hints.slice(0, data.hintLevel).map(h=>'<div class="hint-line">'+Utils.escapeHtml(h)+'</div>').join('') + '</div>';
+        const more = data.hintLevel>=hints.length ? '<div class="practice-sub">Now type it once more to lock it in.</div>' : '';
+        feedbackEl.innerHTML = '<div class="feedback incorrect">Not yet — here\'s a hint:</div>' + ladder + more;
+        input.value = ''; input.focus();
+      }
+    };
+    submit.addEventListener('click', doCheck);
+    input.addEventListener('keydown', e=>{ if(e.key==='Enter') doCheck(); });
+    input.focus();
+  },
+
+  /* ---- Step 6: Constrained production ---- */
+  genStep6(){
+    if(this.state.step6Data) return this.state.step6Data;
+    const word = this.state.word;
+    let prompt;
+    if(word.collocations.length && Math.random()<0.5) prompt = 'Write a sentence using "'+word.word+'" together with "'+Utils.pick(word.collocations)+'".';
+    else if(word.contexts.length) prompt = 'Write a sentence about "'+Utils.pick(word.contexts)+'" using "'+word.word+'".';
+    else prompt = 'Write a sentence using "'+word.word+'".';
+    this.state.step6Data = { prompt };
+    return this.state.step6Data;
+  },
+  renderStep6(){
+    const data = this.genStep6();
+    return '<div class="teach-step-label">Step 6 · Constrained Production</div>' +
+      '<div class="practice-prompt">'+Utils.escapeHtml(data.prompt)+'</div>' +
+      '<div class="answer-input"><textarea id="constrainedInput" rows="2" placeholder="Write your sentence…"></textarea>' +
+      '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="constrainedSubmit">Check My Sentence</button></div></div>' +
+      '<div id="teachFeedback"></div>';
+  },
+  wireStep6(){
+    const word = this.state.word;
+    this._cacheInput(document.getElementById('constrainedInput'), 'step6_constrained');
+    document.getElementById('constrainedSubmit').addEventListener('click', ()=>{
+      const val = document.getElementById('constrainedInput').value.trim();
+      const feedbackEl = document.getElementById('teachFeedback');
+      feedbackEl.innerHTML = '<div class="feedback"><b>Your sentence:</b><div style="margin-top:4px;">'+Utils.escapeHtml(val||'(empty)')+'</div></div>' +
+        '<div class="self-check"><div><b>Grammar:</b> '+Utils.escapeHtml(word.grammar||'—')+'</div><div><b>Collocations:</b> '+Utils.escapeHtml(word.collocations.join(', ')||'—')+'</div></div>' +
+        '<div class="practice-sub" style="margin-top:10px;">Did it satisfy the constraint and use the word correctly?</div>' +
+        '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">No, needs work</button></div>';
+      feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['guidedProduction','grammar','collocation'], successMsg:'Nice — constraint satisfied.' }));
+      feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.production }));
+    });
+  },
+
+  /* ---- Step 7: Independent production ---- */
+  renderStep7(){
+    return '<div class="teach-step-label">Step 7 · Independent Production</div>' +
+      '<div class="practice-prompt">Write an original sentence using "'+Utils.escapeHtml(this.state.word.word)+'" — no constraints.</div>' +
+      '<div class="answer-input"><textarea id="independentInput" rows="2" placeholder="Write your sentence…"></textarea>' +
+      '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="independentSubmit">Check My Sentence</button></div></div>' +
+      '<div id="teachFeedback"></div>';
+  },
+  wireStep7(){
+    const word = this.state.word;
+    this._cacheInput(document.getElementById('independentInput'), 'step7_independent');
+    document.getElementById('independentSubmit').addEventListener('click', ()=>{
+      const val = document.getElementById('independentInput').value.trim();
+      const feedbackEl = document.getElementById('teachFeedback');
+      feedbackEl.innerHTML = '<div class="feedback"><b>Your sentence:</b><div style="margin-top:4px;">'+Utils.escapeHtml(val||'(empty)')+'</div></div>' +
+        '<div class="practice-sub" style="margin-top:10px;">Original and correct?</div>' +
+        '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">No, needs work</button></div>';
+      feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['independentProduction'], successMsg:'Great — independent production achieved.' }));
+      feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.production }));
+    });
+  },
+
+  /* ---- Step 8: completion ---- */
+  renderCompletion(){
+    const word = this.state.word;
+    return '<div class="teach-step-label">Step 8 · Entering Retrieval Queue</div>' +
+      '<div class="teach-headword">'+Utils.escapeHtml(word.word)+'</div>' +
+      '<div class="practice-sub">Teaching complete. This word now enters your spaced-retrieval schedule.</div>' +
+      '<div class="dim-grid">' + DIMENSIONS.map(d=>'<div class="dim-item"><div class="name">'+d.label+'</div><span class="dim-badge '+word.dims[d.key].status.replace(' ','')+'">'+word.dims[d.key].status+'</span></div>').join('') + '</div>' +
+      '<div class="btn-row" style="justify-content:center;margin-top:16px;"><button class="btn primary" id="finishTeachBtn">'+(this.queueIdx<this.queue.length-1?'Continue to Next Word':'Done')+'</button></div>';
+  },
+
+  /* ---- Shared outcome / diagnosis handler for steps 4, 6, 7 ---- */
+  handleStepOutcome(success, opts){
+    opts = opts || {};
+    const word = this.state.word;
+    const feedbackEl = document.getElementById('teachFeedback');
+    if(success){
+      (opts.dims||[]).forEach(d=>DimModel.record(word, d, true));
+      WordModel.logAttempt(word, 0, true, { phase:'teaching', step:this.state.step });
+      Storage.save();
+      if(opts.askCategoryOnSuccess){
+        feedbackEl.innerHTML = '<div class="feedback correct">✓ '+(opts.successMsg||'Correct.')+'</div>' +
+          '<div class="practice-sub" style="margin-top:10px;">What kind of slip was that, before it clicked?</div>' +
+          '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
+        feedbackEl.querySelectorAll('.error-cats button').forEach(btn=>{
+          btn.addEventListener('click', ()=>{
+            WordModel.logError(word, btn.dataset.c, 0);
+            word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: btn.dataset.c });
+            Storage.save();
+            feedbackEl.innerHTML = '<div class="feedback correct">✓ Logged.</div><div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="advanceBtn">Continue</button></div>';
+            document.getElementById('advanceBtn').addEventListener('click', ()=>this.goStep(this.state.step+1));
+          });
+        });
+      } else {
+        feedbackEl.innerHTML = '<div class="feedback correct">✓ '+(opts.successMsg||'Correct.')+'</div>' +
+          '<div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="advanceBtn">Continue</button></div>';
+        document.getElementById('advanceBtn').addEventListener('click', ()=>this.goStep(this.state.step+1));
+      }
+    } else {
+      this.state.retry = (this.state.retry||0)+1;
+      feedbackEl.innerHTML = '<div class="feedback incorrect">✗ Not quite.' +
+        (opts.correctAnswerText ? '<div class="correct-answer">Correct: '+Utils.escapeHtml(opts.correctAnswerText)+'</div>' : '') + '</div>' +
+        '<div class="practice-sub" style="margin-top:10px;">What kind of error was this?</div>' +
+        '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
+      feedbackEl.querySelectorAll('.error-cats button').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          const cat = btn.dataset.c;
+          WordModel.logError(word, cat, 0);
+          WordModel.logAttempt(word, 0, false, { phase:'teaching', step:this.state.step, errorCategory:cat });
+          word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: cat });
+          Storage.save();
+          const secondFailure = this.state.retry>=2;
+          feedbackEl.innerHTML = '<div class="diag-box"><b>'+cat+' error.</b><div class="expl">'+ERROR_EXPLANATIONS[cat]+'</div></div>' +
+            (secondFailure ?
+              ('<div class="teach-box"><h4>Why this is correct</h4><div>'+Utils.escapeHtml(opts.correctAnswerText||word.meaning)+'</div></div>' +
+               '<div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="advanceBtn">I understand — Continue</button></div>')
+              : '<div class="btn-row" style="justify-content:center;margin-top:12px;"><button class="btn primary" id="retryBtn">Try This Step Again</button></div>');
+          const adv = feedbackEl.querySelector('#advanceBtn');
+          if(adv) adv.addEventListener('click', ()=>this.goStep(this.state.step+1));
+          const rt = feedbackEl.querySelector('#retryBtn');
+          if(rt) rt.addEventListener('click', ()=>{ this.state.step4Data=null; this.state.step6Data=null; this.render(); });
+        });
+      });
+    }
+  },
+
+  _wireCurrentStep(){
+    const s = this.state;
+    if(s.step===1 || s.step===2 || s.step===3){
+      const btn = document.getElementById('nextBtn');
+      if(btn) btn.addEventListener('click', ()=>this.goStep(s.step+1));
+    } else if(s.step===4) this.wireStep4();
+    else if(s.step===5) this.wireStep5();
+    else if(s.step===6) this.wireStep6();
+    else if(s.step===7) this.wireStep7();
+    else {
+      const b = document.getElementById('finishTeachBtn');
+      if(b) b.addEventListener('click', ()=>this.finishWord());
+    }
+  }
+};
+
+/* ============================== BOOT ============================== */
+document.addEventListener('DOMContentLoaded', ()=>App.init());
+})();
+</script>
+</body>
+</html>
