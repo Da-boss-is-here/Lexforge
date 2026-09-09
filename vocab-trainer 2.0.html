@@ -295,6 +295,15 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 <div id="modalRoot"></div>
 <div id="toastRoot"></div>
 
+<!-- Vendored locally (not CDN) so the app keeps working with no network access.
+     lib/fsrs.umd.js is ts-fsrs, implementing FSRS-6 (see lib/fsrs-scheduler.js
+     for why not FSRS-7). lib/fsrs-scheduler.js and lib/due-queue.js are also
+     plain classic scripts sharing this page's global scope, same as every
+     other module below (WordModel, DimModel, etc.) -- no bundler, no ES
+     modules, so this keeps working when the file is opened directly. -->
+<script src="lib/fsrs.umd.js"></script>
+<script src="lib/fsrs-scheduler.js"></script>
+<script src="lib/due-queue.js"></script>
 <script>
 (function(){
 "use strict";
@@ -492,16 +501,23 @@ const BulkImport = {
 /* ============================== STORAGE ============================== */
 const STORAGE_KEY = 'coreVocabTrainer.v1';
 const STORAGE_BACKUP_KEY = 'coreVocabTrainer.v1.corrupted_backup';
+const FSRS_REVIEW_LOG_CAP = 5000;
 
 function defaultState(){
   return {
-    version: 1,
+    version: 2,
     words: [],
     errorLog: [], // {ts, wordId, word, category, level}
-    settings: { examDate: null, theme: 'system' },
+    settings: {
+      examDate: null, theme: 'system',
+      fsrs: FSRSScheduler.defaultSettings()
+    },
     sessionLog: [], // {ts, summary}
     writingLog: [], // {ts, date, text, errors:[{quoted,word,wordId,category,correction,matched}]}
     examLog: [], // {ts, date, prompt, minutes, text, targetWords:[{word,wordId,outcome,category}]}
+    // Per-review measurement log for FSRS-scheduled dimensions (Phase 5 groundwork). Separate from
+    // word.history so analytics doesn't need to filter mixed-type entries. Capped, see Storage.save.
+    fsrsReviewLog: [], // {ts, wordId, dimension, rating, predictedR, outcome, desiredRetentionAtSchedule, stabilityBefore, stabilityAfter, difficultyBefore, difficultyAfter, elapsedDays, scheduledDays}
     practiceSession: null // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
   };
 }
@@ -517,10 +533,12 @@ function validateAndRepair(raw){
   if(raw.settings && typeof raw.settings==='object'){
     out.settings.examDate = typeof raw.settings.examDate==='string' ? raw.settings.examDate : null;
     out.settings.theme = ['system','light','dark'].includes(raw.settings.theme) ? raw.settings.theme : 'system';
+    out.settings.fsrs = FSRSScheduler.repairSettings(raw.settings.fsrs);
   }
   if(Array.isArray(raw.sessionLog)) out.sessionLog = raw.sessionLog.filter(s=>s && s.ts);
   if(Array.isArray(raw.writingLog)) out.writingLog = raw.writingLog.filter(s=>s && s.ts);
   if(Array.isArray(raw.examLog)) out.examLog = raw.examLog.filter(s=>s && s.ts);
+  if(Array.isArray(raw.fsrsReviewLog)) out.fsrsReviewLog = raw.fsrsReviewLog.filter(s=>s && s.ts).slice(-FSRS_REVIEW_LOG_CAP);
   if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
     out.practiceSession = raw.practiceSession;
   }
@@ -554,6 +572,7 @@ function repairWord(w){
     lastClozeIndex: typeof w.lastClozeIndex==='number' ? w.lastClozeIndex : -1,
     wordType: WORD_TYPES.some(t=>t.key===w.wordType) ? w.wordType : 'general',
     dims: repairDims(w.dims),
+    fsrs: FSRSScheduler.repairWordFsrs(w.fsrs),
     teaching: (w.teaching && typeof w.teaching==='object') ? {
       completed: !!w.teaching.completed,
       currentStep: Utils.clamp(Number(w.teaching.currentStep)||1, 1, 8),
@@ -638,6 +657,7 @@ const WordModel = {
       lastClozeIndex: -1,
       wordType: WORD_TYPES.some(t=>t.key===fields.wordType) ? fields.wordType : 'general',
       dims: freshDims(),
+      fsrs: FSRSScheduler.freshWordFsrs(),
       teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }
     };
   },
@@ -859,7 +879,17 @@ const Practice = {
     // dedupe
     const seen = new Set();
     queue = queue.filter(w=>{ if(seen.has(w.id)) return false; seen.add(w.id); return true; });
-    return queue.map(w=>({ word:w, level: opts.category ? Math.max(2, w.levelState.level-1) : w.levelState.level }));
+    const legacyItems = queue.map(w=>({ track:'legacy', word:w, level: opts.category ? Math.max(2, w.levelState.level-1) : w.levelState.level }));
+
+    // Category-specific drilling (e.g. "practice my Collocation errors") stays legacy-only —
+    // FSRS-scheduled recognition isn't tied to an error category today.
+    if(opts.category) return legacyItems;
+
+    // Recognition is scheduled independently by FSRS now (its own due date, not gated by
+    // word.levelState.level), so it's selected separately here and merged in — everything
+    // else above is exactly the pre-FSRS logic, untouched.
+    const fsrsItems = DueQueue.buildDimensionItems(pool, 'recognition', new Date());
+    return DueQueue.mergeQueues(fsrsItems, legacyItems);
   },
 
   buildProductionQueue(limit){
@@ -871,6 +901,14 @@ const Practice = {
   },
 
   generateQuestion(item){
+    if(item.track==='fsrs'){
+      // Reuses the existing recognition question generator/UI unchanged — only what
+      // happens after grading (see handleGraded) differs for an FSRS-track item.
+      const q = this.genRecognition(item.word);
+      q.track = 'fsrs';
+      q.dimension = item.dimension;
+      return q;
+    }
     const word = item.word;
     const level = item.level;
     if(item.drillType) return this.generateDrill(item);
@@ -878,6 +916,31 @@ const Practice = {
     if(level===2) return this.genCuedRecall(word);
     if(level===3) return this.genCloze(word);
     return this.genProduction(word);
+  },
+
+  // Grades one FSRS-scheduled dimension for a word. Updates only word.fsrs[dimension] --
+  // never word.srs or word.levelState, which the legacy dimensions still own exclusively.
+  gradeFsrs(word, dimension, ratingKey){
+    const settings = Storage.state.settings.fsrs;
+    const before = word.fsrs[dimension];
+    const result = FSRSScheduler.grade(before, ratingKey, {
+      now: new Date(),
+      desiredRetention: settings.desiredRetention,
+      maxIntervalDays: settings.maxIntervalDays || undefined,
+      params: settings.params || undefined
+    });
+    word.fsrs[dimension] = result.card;
+    Storage.state.fsrsReviewLog.push({
+      ts: Date.now(), wordId: word.id, dimension, rating: ratingKey,
+      predictedR: result.predictedR, outcome: ratingKey!=='again',
+      desiredRetentionAtSchedule: settings.desiredRetention,
+      stabilityBefore: before.stability, stabilityAfter: result.card.stability,
+      difficultyBefore: before.difficulty, difficultyAfter: result.card.difficulty,
+      elapsedDays: result.card.elapsed_days, scheduledDays: result.card.scheduled_days
+    });
+    if(Storage.state.fsrsReviewLog.length>FSRS_REVIEW_LOG_CAP){
+      Storage.state.fsrsReviewLog = Storage.state.fsrsReviewLog.slice(-FSRS_REVIEW_LOG_CAP);
+    }
   },
 
   genRecognition(word){
@@ -1988,8 +2051,12 @@ const Views = {
       contBtn.addEventListener('click', ()=>{
         WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat });
         WordModel.logError(word, chosenCat, question.level);
-        WordModel.updateLadder(word, question.level, false);
-        WordModel.applyRating(word, 'again');
+        if(question.track==='fsrs'){
+          Practice.gradeFsrs(word, question.dimension, 'again');
+        } else {
+          WordModel.updateLadder(word, question.level, false);
+          WordModel.applyRating(word, 'again');
+        }
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:false, category: chosenCat });
         s.idx++;
@@ -1999,8 +2066,12 @@ const Views = {
     } else {
       const finish = (rating)=>{
         WordModel.logAttempt(word, question.level, true, { rating });
-        WordModel.updateLadder(word, question.level, true);
-        WordModel.applyRating(word, rating);
+        if(question.track==='fsrs'){
+          Practice.gradeFsrs(word, question.dimension, rating);
+        } else {
+          WordModel.updateLadder(word, question.level, true);
+          WordModel.applyRating(word, rating);
+        }
         this.recordDimForQuestion(question, true);
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:true, rating });
