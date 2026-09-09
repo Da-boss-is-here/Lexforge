@@ -309,6 +309,18 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 .achv-card .lock{font-family:var(--mono);font-size:10px;text-transform:none;color:var(--text-dim);margin-top:4px;}
 .streak-banner{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:16px;font-weight:650;}
 .streak-banner .flame{font-size:24px;}
+
+/* Interaction polish: consistent keyboard focus, subtle hover feedback.
+   Kept as one block at the end so it layers on top of the component rules
+   above without needing to touch any of them individually. */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px;}
+.btn:focus-visible,nav.tabs button:focus-visible{outline-offset:2px;}
+.stat,.achv-card,.chart-card,.dim-item{transition:border-color .15s var(--ease),transform .15s var(--ease);}
+.achv-card.unlocked:hover{transform:translateY(-2px);}
+.word-row .right .btn:hover,.word-row .right .speak-btn:hover{transform:translateY(-1px);}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important;}
+}
 </style>
 </head>
 <body>
