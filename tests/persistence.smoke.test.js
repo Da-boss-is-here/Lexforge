@@ -130,6 +130,34 @@ test('validateAndRepair migrates a Phase-1-era save (has fsrs.recognition, no fs
   assert.equal(w.fsrs.production.state, 0);
 });
 
+test('validateAndRepair migrates a Phase-2-era save (has fsrs.recognition + fsrs.production, no fsrs.meaningRecall yet) without throwing', () => {
+  const { exports: E } = buildSandbox();
+  const phase2Save = {
+    version: 2,
+    words: [{
+      id: 'w1', word: 'stopgap', meaning: 'temporary substitute', form: '', grammar: '', collocations: [], contrast: '',
+      contexts: [], production: '', cloze: [], created: '2025-01-01',
+      srs: { interval: 5, nextReview: '2025-06-01', easeStreak: 2, lastPracticed: '2025-05-27' },
+      levelState: { level: 2 }, history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+      dims: {},
+      fsrs: {
+        recognition: { state: 2, due: '2026-01-01T00:00:00Z', stability: 12, difficulty: 4, elapsed_days: 2, scheduled_days: 4, reps: 2, lapses: 0, learning_steps: 0, last_review: '2025-12-30T00:00:00Z' },
+        production: { state: 0, due: '2026-01-01T00:00:00Z', stability: 0, difficulty: 0, elapsed_days: 0, scheduled_days: 0, reps: 0, lapses: 0, learning_steps: 0, last_review: null }
+      }
+      // no `fsrs.meaningRecall` -- exactly what a save from Phase 2 (before this change) looks like
+    }],
+    errorLog: [], settings: { examDate: null, theme: 'system', fsrs: FSRSScheduler.defaultSettings() },
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null, fsrsReviewLog: []
+  };
+  const repaired = E.validateAndRepair(phase2Save);
+  const w = repaired.words[0];
+  assert.equal(w.fsrs.recognition.stability, 12, 'existing recognition card should be preserved untouched');
+  assert.equal(w.fsrs.production.reps, 0, 'existing production card should be preserved untouched');
+  assert.ok(w.fsrs.meaningRecall, 'a fresh meaningRecall card should be synthesized for a Phase-2-era word');
+  assert.equal(w.fsrs.meaningRecall.state, 0);
+});
+
 test('a migrated legacy word is immediately eligible for the FSRS recognition queue (cold start)', () => {
   const { exports: E } = buildSandbox();
   const legacySave = {
@@ -167,4 +195,21 @@ test('Practice.buildDueQueue only surfaces a production item once recognition st
   word.fsrs.recognition.stability = 25; // above the threshold now
   const after = E.Practice.buildDueQueue({});
   assert.ok(after.some(i => i.track === 'fsrs' && i.dimension === 'production' && i.word.id === word.id), 'production should surface once recognition stability clears the threshold');
+});
+
+test('Practice.buildDueQueue surfaces a brand-new word\'s meaningRecall item immediately -- ungated, unlike production', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'apprise', meaning: 'to inform', form: 'verb', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  word.history.push({ date: '2025-01-01', level: 2, correct: true, phase: 'practice' });
+  // recognition stability is 0 (never reviewed) -- would keep production locked, but
+  // meaningRecall has no such gate and should surface anyway.
+  E.Storage.state.words.push(word);
+
+  const items = E.Practice.buildDueQueue({});
+  assert.ok(items.some(i => i.track === 'fsrs' && i.dimension === 'meaningRecall' && i.word.id === word.id), 'meaningRecall should be immediately eligible for a fresh word with zero recognition stability');
 });

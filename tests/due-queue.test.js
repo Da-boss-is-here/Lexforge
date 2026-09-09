@@ -66,6 +66,13 @@ test('buildDimensionItems with no isEligible argument behaves exactly as before 
   assert.equal(items.length, 1);
 });
 
+test('meaningRecall (Phase 3, cued recall) is ungated like recognition -- due is the only condition, no isEligible predicate needed', () => {
+  const words = [{ id: 'w1', teaching: { completed: true }, fsrs: { meaningRecall: { due: '2026-01-01T00:00:00Z' } } }];
+  const items = DueQueue.buildDimensionItems(words, 'meaningRecall', new Date('2026-01-02T00:00:00Z'));
+  assert.equal(items.length, 1);
+  assert.equal(items[0].dimension, 'meaningRecall');
+});
+
 test('mergeQueues preserves each input list\'s internal order', () => {
   const a = [{ id: 'a1' }, { id: 'a2' }];
   const b = [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }, { id: 'b4' }];

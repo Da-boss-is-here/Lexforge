@@ -951,17 +951,21 @@ const Practice = {
     // FSRS-scheduled recognition isn't tied to an error category today.
     if(opts.category) return legacyItems;
 
-    // Recognition and production are each scheduled independently by FSRS now (their own
-    // due dates, not gated by word.levelState.level), so they're selected separately here
-    // and merged in — everything else above is exactly the pre-FSRS logic, untouched.
-    // Production has one extra gate: it only surfaces once a word's recognition has
-    // reached PRODUCTION_UNLOCK_STABILITY — an engineering sequencing policy, not a
-    // validated learning principle, recomputed live (not a persisted "unlocked" flag).
+    // Recognition, meaningRecall (cued recall), and production are each scheduled
+    // independently by FSRS now (their own due dates, not gated by word.levelState.level),
+    // so they're selected separately here and merged in — everything else above is exactly
+    // the pre-FSRS logic, untouched. meaningRecall is ungated, same as recognition: cued
+    // recall has no real prerequisite in this app today (every word starts at legacy ladder
+    // level 2, the cued-recall level, and never falls below it), unlike production, which
+    // is gated because it's genuinely downstream of climbing the ladder. Production's gate
+    // is an engineering sequencing policy, not a validated learning principle, recomputed
+    // live (not a persisted "unlocked" flag).
     const now = new Date();
     const recognitionItems = DueQueue.buildDimensionItems(pool, 'recognition', now);
+    const meaningRecallItems = DueQueue.buildDimensionItems(pool, 'meaningRecall', now);
     const productionItems = DueQueue.buildDimensionItems(pool, 'production', now,
       w => w.fsrs.recognition.stability >= FSRSScheduler.PRODUCTION_UNLOCK_STABILITY);
-    const fsrsItems = DueQueue.mergeQueues(recognitionItems, productionItems);
+    const fsrsItems = DueQueue.mergeQueues(DueQueue.mergeQueues(recognitionItems, meaningRecallItems), productionItems);
     return DueQueue.mergeQueues(fsrsItems, legacyItems);
   },
 
@@ -977,7 +981,9 @@ const Practice = {
     if(item.track==='fsrs'){
       // Reuses the existing per-dimension question generators/UI unchanged — only what
       // happens after grading (see handleGraded) differs for an FSRS-track item.
-      const q = item.dimension==='production' ? this.genProduction(item.word) : this.genRecognition(item.word);
+      const q = item.dimension==='production' ? this.genProduction(item.word) :
+        item.dimension==='meaningRecall' ? this.genCuedRecall(item.word) :
+        this.genRecognition(item.word);
       q.track = 'fsrs';
       q.dimension = item.dimension;
       return q;

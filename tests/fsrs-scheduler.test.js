@@ -39,8 +39,8 @@ test('FSRS_GENERATION is exposed as an inspectable constant, currently 6', () =>
   assert.equal(FSRSScheduler.FSRS_GENERATION, 6);
 });
 
-test('DIMENSIONS includes both recognition and production as of Phase 2', () => {
-  assert.deepEqual(FSRSScheduler.DIMENSIONS, ['recognition', 'production']);
+test('DIMENSIONS includes recognition, production, and meaningRecall as of Phase 3', () => {
+  assert.deepEqual(FSRSScheduler.DIMENSIONS, ['recognition', 'production', 'meaningRecall']);
 });
 
 test('PRODUCTION_UNLOCK_STABILITY is exposed as an inspectable constant', () => {
@@ -72,18 +72,21 @@ test('repairWordFsrs synthesizes a fresh recognition card for a word with no fsr
   assert.equal(repaired.recognition.state, 0);
 });
 
-test('repairWordFsrs also synthesizes a fresh production card (Phase 2), uniformly with recognition', () => {
+test('repairWordFsrs also synthesizes fresh production and meaningRecall cards, uniformly with recognition', () => {
   const repaired = FSRSScheduler.repairWordFsrs(undefined);
   assert.ok(repaired.production);
   assert.equal(repaired.production.state, 0);
+  assert.ok(repaired.meaningRecall);
+  assert.equal(repaired.meaningRecall.state, 0);
 });
 
 test('repairWordFsrs preserves an existing production card from a pre-Phase-2 save that only has recognition', () => {
   const now = new Date('2026-01-01T00:00:00Z');
   const graded = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now });
-  const repaired = FSRSScheduler.repairWordFsrs({ recognition: graded.card }); // no `production` key at all
+  const repaired = FSRSScheduler.repairWordFsrs({ recognition: graded.card }); // no `production` or `meaningRecall` key at all
   assert.deepEqual(repaired.recognition, graded.card);
   assert.equal(repaired.production.state, 0, 'missing production migrates to a fresh card, same as a pre-FSRS save migrated for recognition in Phase 1');
+  assert.equal(repaired.meaningRecall.state, 0, 'missing meaningRecall (Phase 3) migrates to a fresh card the same way');
 });
 
 test('repairSettings falls back to defaults (0.90 desired retention, no cap) for a pre-existing save', () => {
