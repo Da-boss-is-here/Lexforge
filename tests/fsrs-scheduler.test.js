@@ -48,6 +48,46 @@ test('PRODUCTION_UNLOCK_STABILITY is exposed as an inspectable constant', () => 
   assert.ok(FSRSScheduler.PRODUCTION_UNLOCK_STABILITY > 0);
 });
 
+/* ---- Phase 4: exam-date compression ---- */
+
+test('compressForExam pulls a too-late due date to roughly half the remaining days, touching only due/scheduled_days', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const card = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  card.due = new Date('2026-02-01T00:00:00Z').toISOString(); // 31 days out, well past a ~11-day-away exam
+  const examDate = '2026-01-11'; // end-of-day is ~11 days from `now` (exam day counts as a full day)
+  const compressed = FSRSScheduler.compressForExam(card, examDate, now);
+  assert.ok(compressed, 'should compress when the natural due lands after the exam');
+  assert.equal(compressed.scheduled_days, 6, 'ceil(11/2) = 6');
+  const compressedDays = Math.round((new Date(compressed.due).getTime() - now.getTime()) / 86400000);
+  assert.equal(compressedDays, 6);
+  // Everything except due/scheduled_days must be the untouched, genuine FSRS output.
+  assert.equal(compressed.stability, card.stability);
+  assert.equal(compressed.difficulty, card.difficulty);
+  assert.equal(compressed.reps, card.reps);
+  assert.equal(compressed.lapses, card.lapses);
+  assert.equal(compressed.last_review, card.last_review);
+});
+
+test('compressForExam returns null when the natural due already lands on/before the exam', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const card = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  card.due = new Date('2026-01-05T00:00:00Z').toISOString();
+  const compressed = FSRSScheduler.compressForExam(card, '2026-01-11', now);
+  assert.equal(compressed, null);
+});
+
+test('compressForExam returns null once the exam date has already passed', () => {
+  const now = new Date('2026-01-15T00:00:00Z');
+  const card = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  card.due = new Date('2026-02-01T00:00:00Z').toISOString();
+  const compressed = FSRSScheduler.compressForExam(card, '2026-01-10', now);
+  assert.equal(compressed, null);
+});
+
+test('State enum is exposed so callers can identify a Relearning (lapsing) card', () => {
+  assert.equal(typeof FSRSScheduler.State.Relearning, 'number');
+});
+
 /* ---- Migration / repair: what runs when a save is read back from localStorage ---- */
 
 test('repairCard treats a missing/malformed card as brand-new (pre-FSRS save migration)', () => {

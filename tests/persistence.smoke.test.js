@@ -213,3 +213,131 @@ test('Practice.buildDueQueue surfaces a brand-new word\'s meaningRecall item imm
   const items = E.Practice.buildDueQueue({});
   assert.ok(items.some(i => i.track === 'fsrs' && i.dimension === 'meaningRecall' && i.word.id === word.id), 'meaningRecall should be immediately eligible for a fresh word with zero recognition stability');
 });
+
+/* ---- Phase 4: exam-date awareness ---- */
+
+function makeExamReadyEligibleWord(E) {
+  const word = E.WordModel.create({
+    word: 'sedulous', meaning: 'diligent', form: 'adjective', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  word.dims.independentProduction = { status: 'Achieved', success: 2, fail: 0 };
+  word.dims.novelApplication = { status: 'Achieved', success: 1, fail: 0 };
+  const today = new Date().toISOString().slice(0, 10);
+  word.history.push({ date: today, level: 4, correct: true, phase: 'practice' });
+  word.history.push({ date: today, level: 4, correct: true, phase: 'practice' });
+  word.history.push({ date: today, level: 4, correct: true, phase: 'practice' });
+  word.srs.nextReview = today; // satisfies the existing legacy srsOk check
+  return word;
+}
+
+test('computeMastery: an exam-ready word with all-New FSRS cards is not penalized -- unreviewed dimensions are exempt', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.settings.examDate = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+  const word = makeExamReadyEligibleWord(E);
+  // recognition/meaningRecall/production are all freshCard() -- reps 0, New state.
+  assert.equal(E.WordModel.computeMastery(word), 'Exam Ready');
+});
+
+test('computeMastery: a Relearning (lapsing) FSRS dimension downgrades Exam Ready to Stable', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.settings.examDate = new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10);
+  const word = makeExamReadyEligibleWord(E);
+  const now = new Date();
+  const afterEasy = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  const afterLapse = FSRSScheduler.grade(afterEasy, 'again', { now }).card;
+  assert.equal(afterLapse.state, FSRSScheduler.State.Relearning, 'sanity check: this card is actually Relearning');
+  word.fsrs.production = afterLapse;
+  assert.equal(E.WordModel.computeMastery(word), 'Stable');
+});
+
+test('computeMastery: an FSRS dimension due past the exam downgrades Exam Ready to Stable', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.settings.examDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  const word = makeExamReadyEligibleWord(E);
+  const now = new Date();
+  const reviewed = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  reviewed.due = new Date(Date.now() + 90 * 86400000).toISOString(); // long past the 5-day-away exam
+  word.fsrs.meaningRecall = reviewed;
+  assert.equal(E.WordModel.computeMastery(word), 'Stable');
+});
+
+test('Practice.gradeFsrs evaluates the "already Exam Ready?" gate AFTER writing this review\'s grade, not before', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeExamReadyEligibleWord(E);
+  const now = new Date();
+
+  // Build a Relearning-state production card the same way FSRS itself would produce one.
+  const afterEasy = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  const relearningCard = FSRSScheduler.grade(afterEasy, 'again', { now }).card;
+  assert.equal(relearningCard.state, FSRSScheduler.State.Relearning);
+
+  // Learn what FSRS would naturally produce for grading this exact card 'easy' -- a lapsed
+  // card graduating back out of Relearning -- without going through gradeFsrs or compression.
+  const natural = FSRSScheduler.grade(relearningCard, 'easy', { now });
+  assert.notEqual(natural.card.state, FSRSScheduler.State.Relearning, 'sanity check: easy graduates it out of Relearning');
+  const examDate = new Date(new Date(natural.card.due).getTime() + 2 * 86400000).toISOString().slice(0, 10);
+
+  // Fabricate a due far in the future on the PRE-grade card. This must have zero effect on the
+  // natural grade() computation (due is never read back in as an input -- confirmed against
+  // fsrs.umd.js's own elapsed_days computation), but if gradeFsrs's exam-ready gate incorrectly
+  // read word.fsrs.production BEFORE writing this review's result, it would still see this
+  // far-future due (and the Relearning state) and wrongly conclude "not ready" -> compress.
+  relearningCard.due = new Date(Date.now() + 200 * 86400000).toISOString();
+  word.fsrs.production = relearningCard;
+  E.Storage.state.settings.examDate = examDate;
+  E.Storage.state.words.push(word);
+
+  E.Practice.gradeFsrs(word, 'production', 'easy');
+
+  const logEntry = E.Storage.state.fsrsReviewLog[E.Storage.state.fsrsReviewLog.length - 1];
+  assert.ok(!logEntry.examCompressed, 'the word became ready by virtue of THIS review, so the post-write gate should see it as ready and skip compression');
+  assert.equal(word.fsrs.production.due, natural.card.due, 'the stored due should be the natural FSRS result, untouched by compression');
+});
+
+test('Practice.gradeFsrs compresses a due date past the exam, and logs the compression on the same log entry', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeExamReadyEligibleWord(E);
+  const now = new Date();
+  const reviewed = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  reviewed.due = new Date(Date.now() + 90 * 86400000).toISOString();
+  reviewed.stability = 60; // large enough that grading 'easy' again naturally lands past the exam
+  word.fsrs.meaningRecall = reviewed;
+  E.Storage.state.settings.examDate = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
+  E.Storage.state.words.push(word);
+
+  E.Practice.gradeFsrs(word, 'meaningRecall', 'easy');
+
+  const logEntry = E.Storage.state.fsrsReviewLog[E.Storage.state.fsrsReviewLog.length - 1];
+  assert.equal(logEntry.examCompressed, true);
+  assert.ok(logEntry.naturalDue, 'the pre-compression natural due should be preserved in the log');
+  const compressedDueMs = new Date(word.fsrs.meaningRecall.due).getTime();
+  const examMs = new Date(E.Storage.state.settings.examDate + 'T23:59:59.999').getTime();
+  assert.ok(compressedDueMs <= examMs, 'the compressed due should land on/before the exam');
+});
+
+test('Practice.gradeFsrs never compresses when no exam date is set -- identical to pre-Phase-4 behavior', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeExamReadyEligibleWord(E);
+  const now = new Date();
+  const reviewed = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
+  reviewed.due = new Date(Date.now() + 90 * 86400000).toISOString();
+  reviewed.stability = 60;
+  word.fsrs.meaningRecall = reviewed;
+  E.Storage.state.settings.examDate = null;
+  E.Storage.state.words.push(word);
+
+  const naturalResult = FSRSScheduler.grade(reviewed, 'easy', { now });
+  E.Practice.gradeFsrs(word, 'meaningRecall', 'easy');
+
+  const logEntry = E.Storage.state.fsrsReviewLog[E.Storage.state.fsrsReviewLog.length - 1];
+  assert.ok(!logEntry.examCompressed);
+  assert.equal(word.fsrs.meaningRecall.due, naturalResult.card.due);
+});

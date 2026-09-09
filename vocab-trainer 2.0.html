@@ -861,7 +861,20 @@ const WordModel = {
     if(examReady){
       const examDate = Storage.state.settings.examDate;
       if(!examDate) return 'Exam Ready';
-      return (word.srs.nextReview && word.srs.nextReview<=examDate) ? 'Exam Ready' : 'Stable';
+      const srsOk = word.srs.nextReview && word.srs.nextReview<=examDate;
+      // Phase 4: an exam-ready word shouldn't have any FSRS-scheduled dimension
+      // (recognition/meaningRecall/production) currently lapsing or due past the
+      // exam -- otherwise "Exam Ready" would ignore what FSRS already knows about
+      // this word. A dimension that's never been reviewed yet (reps===0) doesn't
+      // count against readiness -- "hasn't started" isn't "failing".
+      const examEndMs = new Date(examDate+'T23:59:59.999').getTime();
+      const fsrsOk = Object.keys(word.fsrs||{}).every(dim=>{
+        const card = word.fsrs[dim];
+        if(!card || card.reps===0) return true;
+        if(card.state===FSRSScheduler.State.Relearning) return false;
+        return new Date(card.due).getTime()<=examEndMs;
+      });
+      return (srsOk && fsrsOk) ? 'Exam Ready' : 'Stable';
     }
     if(strong) return 'Stable';
     if(rh.length<3 || word.levelState.level<=2) return 'Learning';
@@ -1008,7 +1021,11 @@ const Practice = {
       maxIntervalDays: settings.maxIntervalDays || undefined,
       params: settings.params || undefined
     });
+    // Write this review's result first. The "already Exam Ready?" gate below reads
+    // word.fsrs[dimension] via computeMastery -- it must see the fresh grade (this
+    // review may itself be what makes the word ready), not the pre-review card.
     word.fsrs[dimension] = result.card;
+
     const logEntry = {
       ts: Date.now(), wordId: word.id, dimension, rating: ratingKey,
       predictedR: result.predictedR, outcome: ratingKey!=='again',
@@ -1023,6 +1040,24 @@ const Practice = {
     if(dimension==='production' && before.state===0){
       logEntry.recognitionStabilityAtUnlock = word.fsrs.recognition.stability;
     }
+
+    // Phase 4: exam-date compression. Gated on the word's mastery AFTER this review's
+    // grade has been written (see comment above) -- computeMastery reads word.fsrs.*
+    // as part of its Exam Ready check (Phase 4), so it must see this review's outcome,
+    // not stale pre-grade state. No-op entirely when no exam date is set, same as the
+    // legacy compression in WordModel.applyRating.
+    const examDate = Storage.state.settings.examDate;
+    if(examDate && examDate >= Utils.todayISO() && WordModel.computeMastery(word)!=='Exam Ready'){
+      const compressed = FSRSScheduler.compressForExam(word.fsrs[dimension], examDate, new Date());
+      if(compressed){
+        logEntry.examCompressed = true;
+        logEntry.naturalDue = word.fsrs[dimension].due;
+        logEntry.naturalScheduledDays = word.fsrs[dimension].scheduled_days;
+        word.fsrs[dimension] = compressed;
+        logEntry.scheduledDays = compressed.scheduled_days;
+      }
+    }
+
     Storage.state.fsrsReviewLog.push(logEntry);
     if(Storage.state.fsrsReviewLog.length>FSRS_REVIEW_LOG_CAP){
       Storage.state.fsrsReviewLog = Storage.state.fsrsReviewLog.slice(-FSRS_REVIEW_LOG_CAP);
