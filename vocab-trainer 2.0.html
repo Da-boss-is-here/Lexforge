@@ -101,6 +101,7 @@ nav.tabs button:not(.active):hover{color:var(--text);background:var(--bg-elev-2)
 
 /* Cards */
 .card{background:var(--bg-elev);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow);margin-bottom:14px;}
+.hero-card{background:linear-gradient(155deg, var(--accent-wash), var(--bg-elev) 60%);border-color:var(--border-strong);}
 .card h2{margin:0 0 14px;font-family:var(--serif);font-size:17px;font-weight:650;letter-spacing:-0.01em;}
 .card h3{margin:0 0 8px;font-family:var(--mono);font-size:11.5px;font-weight:650;color:var(--text-dim);text-transform:none;letter-spacing:0;}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}
@@ -1281,6 +1282,15 @@ const Views = {
       html += '<div class="banner ' + (days<=3?'bad':'info') + '">🎯 Exam in ' + (days<0?'the past':days+' day'+(days===1?'':'s')) + ' (' + Utils.fmtDate(examDate) + ') — ' + stages['Exam Ready'] + ' word(s) exam-ready.</div>';
     }
 
+    const dueTotal = overdue.length + dueToday.length;
+    html += '<div class="card hero-card"><h2 class="mt0">'+(dueTotal ? dueTotal+' word'+(dueTotal===1?'':'s')+' ready to review' : 'You\'re caught up')+'</h2>' +
+      '<p class="field-hint" style="margin:-6px 0 14px;">'+(dueTotal ? 'A focused session takes about 10–15 minutes.' : 'Nothing due right now — add a word or get ahead on upcoming reviews.')+'</p>' +
+      '<div class="btn-row">' +
+      '<button class="btn primary" id="startDailyBtn">▶ Start Daily Session</button>' +
+      '<button class="btn ghost" id="quickDueBtn">Quick Review (Due Only)</button>' +
+      '<button class="btn ghost" id="addWordBtn2">＋ Add Word</button>' +
+      '</div></div>';
+
     html += '<div class="card"><h2>Today</h2><div class="grid">' +
       stat(overdue.length, 'Overdue', overdue.length>0?'bad':'') +
       stat(dueToday.length, 'Due Today', '') +
@@ -1291,12 +1301,6 @@ const Views = {
     if(awaitingTeaching.length){
       html += '<div class="banner info">📖 '+awaitingTeaching.length+' word(s) are saved but have not been taught yet — they will not appear in retrieval practice until the Teaching Phase is complete. <button class="small-link" id="teachNowBtn" style="margin-left:6px;">Teach now →</button></div>';
     }
-
-    html += '<div class="card"><div class="btn-row">' +
-      '<button class="btn primary" id="startDailyBtn">▶ Start Daily Session</button>' +
-      '<button class="btn ghost" id="quickDueBtn">Quick Review (Due Only)</button>' +
-      '<button class="btn ghost" id="addWordBtn2">＋ Add Word</button>' +
-      '</div></div>';
 
     html += '<div class="card"><h2>Mastery Stages</h2><div class="grid">' +
       Object.entries(stages).map(([k,v])=>'<div class="stat"><div class="num">'+v+'</div><div class="label">'+k+'</div></div>').join('') +
@@ -1903,7 +1907,7 @@ const Views = {
       '<div class="practice-progress">Item '+(s.idx+1)+' of '+s.queue.length+
       ' <button type="button" class="btn ghost small" id="practiceBackBtn" style="margin-left:8px;"'+(canGoBack?'':' disabled')+'>← Back</button></div>' +
       '<div class="practice-card" id="practiceCard">' +
-      '<div class="practice-level">Level '+q.level+' · '+levelName(q.level)+(q.drillType?' · Drill: '+q.drillType:'')+'</div>' +
+      '<div class="practice-level">'+trackBadge(q)+'<span>'+levelName(q.level)+(q.drillType?' · Drill: '+q.drillType:'')+'</span></div>' +
       renderMnemonic(q.word) +
       renderMeaningHint(q) +
       '<div class="practice-sub">'+Utils.escapeHtml(q.promptTitle||'')+'</div>' +
@@ -1962,6 +1966,11 @@ const Views = {
     }
 
     function levelName(l){ return ['','Recognition','Cued Recall','Cloze','Free Production'][l]; }
+    function trackBadge(q){
+      const cls = q.type==='drill' ? 'drill' : (q.type||'recognition');
+      const label = q.type==='drill' ? 'Drill' : levelName(q.level);
+      return '<span class="track-badge '+cls+'">'+label+'</span>';
+    }
     function renderPrompt(q){
       if(q.type==='recognition') return 'Word: <b>'+Utils.escapeHtml(q.prompt)+'</b>';
       if(q.type==='cloze') return Utils.escapeHtml(q.prompt).replace('_____','<span class="blank">_____</span>');
@@ -2580,15 +2589,25 @@ const Analytics = {
     el.innerHTML = html;
 
     const css = getComputedStyle(document.documentElement);
-    const dimColor = css.getPropertyValue('--text-dim').trim() || '#565F52';
-    const gridColor = css.getPropertyValue('--border').trim() || '#C9C3AE';
-    Chart.defaults.color = dimColor;
+    const v = name => css.getPropertyValue(name).trim();
+    const theme = {
+      dim: v('--text-dim') || '#6E6E73',
+      grid: v('--border') || '#E3E3E6',
+      accent: v('--accent') || '#0071E3',
+      accentWash: v('--accent-wash') || 'rgba(0,113,227,.16)',
+      good: v('--good') || '#1FA34A',
+      bad: v('--bad') || '#E0342A',
+      highlight: v('--highlight') || '#FF9F0A',
+      text: v('--text') || '#1D1D1F',
+      bgElev: v('--bg-elev') || '#FFFFFF'
+    };
+    Chart.defaults.color = theme.dim;
     Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
 
-    this.renderProgressChart(gridColor);
-    this.renderMasteryChart();
-    this.renderForecastChart(gridColor);
-    this.renderErrorChart(gridColor);
+    this.renderProgressChart(theme);
+    this.renderMasteryChart(theme);
+    this.renderForecastChart(theme);
+    this.renderErrorChart(theme);
   },
 
   destroyCharts(){
@@ -2661,7 +2680,7 @@ const Analytics = {
     return { labels, data };
   },
 
-  renderProgressChart(gridColor){
+  renderProgressChart(theme){
     const { labels, data } = this.buildLearningProgressData();
     this.charts.progress = new Chart(document.getElementById('chartProgress'), {
       type: 'line',
@@ -2670,72 +2689,76 @@ const Analytics = {
         datasets: [{
           label: 'Words Learned',
           data,
-          borderColor: '#A8402F',
-          backgroundColor: 'rgba(168,64,47,.16)',
+          borderColor: theme.accent,
+          backgroundColor: theme.accentWash,
+          borderWidth: 2,
           fill: true,
-          tension: .3,
-          pointRadius: labels.length>20 ? 0 : 3
+          tension: .35,
+          pointRadius: labels.length>20 ? 0 : 3,
+          pointBackgroundColor: theme.accent,
+          pointBorderWidth: 0
         }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, title: { display: true, text: 'Words Learned Over Time' } },
+        // Card header above already names the chart, so the built-in title is
+        // skipped to avoid a duplicate line of text (Analytics layout pass).
+        plugins: { legend: { display: false }, title: { display: false } },
         scales: {
-          x: { grid: { color: gridColor }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
-          y: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } }
+          x: { grid: { display: false }, border: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
+          y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }
         }
       }
     });
   },
 
-  renderMasteryChart(){
+  renderMasteryChart(theme){
     const words = Storage.state.words;
     const stages = ['New','Learning','Unstable','Stable','Exam Ready'];
-    const colors = ['#A39B7E','#A8402F','#EFC94C','#7C8768','#232A3B'];
+    const colors = [theme.grid, theme.accent, theme.highlight, theme.good, theme.text];
     const counts = stages.map(s=>words.filter(w=>WordModel.computeMastery(w)===s).length);
     const total = words.length;
     this.charts.mastery = new Chart(document.getElementById('chartMastery'), {
       type: 'doughnut',
       data: {
         labels: stages.map((s,i)=>s+' — '+counts[i]+' ('+(total?Math.round(counts[i]/total*100):0)+'%)'),
-        datasets: [{ data: counts, backgroundColor: colors, borderWidth: 0 }]
+        datasets: [{ data: counts, backgroundColor: colors, borderWidth: 2, borderColor: theme.bgElev || '#fff' }]
       },
       options: {
-        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        responsive: true, maintainAspectRatio: false, cutout: '68%',
         plugins: {
-          legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } },
-          title: { display: true, text: 'Current Mastery Distribution' }
+          legend: { position: 'bottom', labels: { boxWidth: 8, usePointStyle: true, pointStyle: 'circle', font: { size: 11 }, padding: 12 } },
+          title: { display: false }
         }
       }
     });
   },
 
-  renderForecastChart(gridColor){
+  renderForecastChart(theme){
     const buckets = [1,3,7,14,30];
     const taught = Storage.state.words.filter(w=>w.teaching && w.teaching.completed && !WordModel.isNew(w));
     const today = Utils.todayISO();
     const counts = buckets.map(n=>taught.filter(w=>Utils.diffDays(today, w.srs.nextReview)<=n).length);
     this.charts.forecast = new Chart(document.getElementById('chartForecast'), {
       type: 'bar',
-      data: { labels: buckets.map(n=>'Next '+n+'d'), datasets: [{ label: 'Words due', data: counts, backgroundColor: '#7C8768', borderRadius: 2 }] },
+      data: { labels: buckets.map(n=>'Next '+n+'d'), datasets: [{ label: 'Words due', data: counts, backgroundColor: theme.accent, borderRadius: 6, barThickness: 16 }] },
       options: {
         indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, title: { display: true, text: 'Upcoming Review Load' } },
-        scales: { x: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } }, y: { grid: { display: false } } }
+        plugins: { legend: { display: false }, title: { display: false } },
+        scales: { x: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }, y: { grid: { display: false }, border: { display: false } } }
       }
     });
   },
 
-  renderErrorChart(gridColor){
+  renderErrorChart(theme){
     const totals = ERROR_CATEGORIES.map(c=>Storage.state.errorLog.filter(e=>e.category===c).length);
-    const colors = ['#A8402F','#7C8768','#EFC94C','#232A3B','#C97B4A','#5B7065','#8A6A18'];
     this.charts.errors = new Chart(document.getElementById('chartErrors'), {
       type: 'bar',
-      data: { labels: ERROR_CATEGORIES, datasets: [{ label: 'Errors', data: totals, backgroundColor: colors, borderRadius: 2 }] },
+      data: { labels: ERROR_CATEGORIES, datasets: [{ label: 'Errors', data: totals, backgroundColor: theme.accent, borderRadius: 6, barThickness: 22 }] },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false }, title: { display: true, text: 'Weakest Vocabulary Dimensions' } },
-        scales: { x: { grid: { display: false } }, y: { grid: { color: gridColor }, beginAtZero: true, ticks: { precision: 0 } } }
+        plugins: { legend: { display: false }, title: { display: false } },
+        scales: { x: { grid: { display: false }, border: { display: false } }, y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } } }
       }
     });
   }
