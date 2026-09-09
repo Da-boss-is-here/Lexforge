@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const DueQueue = require('../lib/due-queue.js');
+const FSRSScheduler = require('../lib/fsrs-scheduler.js');
 
 const HTML_PATH = path.join(__dirname, '..', 'vocab-trainer 2.0.html');
 
@@ -105,6 +106,30 @@ test('validateAndRepair migrates a pre-FSRS save (v1, no fsrs fields anywhere) w
   assert.equal(repaired.fsrsReviewLog.length, 0);
 });
 
+test('validateAndRepair migrates a Phase-1-era save (has fsrs.recognition, no fsrs.production yet) without throwing', () => {
+  const { exports: E } = buildSandbox();
+  const phase1Save = {
+    version: 2,
+    words: [{
+      id: 'w1', word: 'interim', meaning: 'temporary', form: '', grammar: '', collocations: [], contrast: '',
+      contexts: [], production: '', cloze: [], created: '2025-01-01',
+      srs: { interval: 5, nextReview: '2025-06-01', easeStreak: 2, lastPracticed: '2025-05-27' },
+      levelState: { level: 4 }, history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+      dims: {}, // repaired to fresh dims
+      fsrs: { recognition: { state: 2, due: '2026-01-01T00:00:00Z', stability: 25, difficulty: 5, elapsed_days: 3, scheduled_days: 5, reps: 4, lapses: 0, learning_steps: 0, last_review: '2025-12-27T00:00:00Z' } }
+      // no `fsrs.production` -- exactly what a save from Phase 1 (before this change) looks like
+    }],
+    errorLog: [], settings: { examDate: null, theme: 'system', fsrs: FSRSScheduler.defaultSettings() },
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null, fsrsReviewLog: []
+  };
+  const repaired = E.validateAndRepair(phase1Save);
+  const w = repaired.words[0];
+  assert.equal(w.fsrs.recognition.stability, 25, 'existing recognition card should be preserved untouched');
+  assert.ok(w.fsrs.production, 'a fresh production card should be synthesized for a Phase-1-era word');
+  assert.equal(w.fsrs.production.state, 0);
+});
+
 test('a migrated legacy word is immediately eligible for the FSRS recognition queue (cold start)', () => {
   const { exports: E } = buildSandbox();
   const legacySave = {
@@ -121,4 +146,25 @@ test('a migrated legacy word is immediately eligible for the FSRS recognition qu
   const repaired = E.validateAndRepair(legacySave);
   const items = DueQueue.buildDimensionItems(repaired.words, 'recognition', new Date());
   assert.equal(items.length, 1, 'a freshly-migrated word should be due for its recognition card immediately, even though its legacy srs.nextReview is far in the future');
+});
+
+test('Practice.buildDueQueue only surfaces a production item once recognition stability clears the unlock threshold', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'seuil', meaning: 'threshold', form: 'noun', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  word.history.push({ date: '2025-01-01', level: 1, correct: true, phase: 'practice' }); // so it isn't filtered as "new"
+  word.fsrs.recognition.stability = 5; // below FSRSScheduler.PRODUCTION_UNLOCK_STABILITY (21)
+  word.fsrs.production.due = new Date(Date.now() - 1000).toISOString(); // due, but not yet eligible
+  E.Storage.state.words.push(word);
+
+  const before = E.Practice.buildDueQueue({});
+  assert.ok(!before.some(i => i.track === 'fsrs' && i.dimension === 'production'), 'production should not surface below the unlock threshold');
+
+  word.fsrs.recognition.stability = 25; // above the threshold now
+  const after = E.Practice.buildDueQueue({});
+  assert.ok(after.some(i => i.track === 'fsrs' && i.dimension === 'production' && i.word.id === word.id), 'production should surface once recognition stability clears the threshold');
 });

@@ -885,10 +885,17 @@ const Practice = {
     // FSRS-scheduled recognition isn't tied to an error category today.
     if(opts.category) return legacyItems;
 
-    // Recognition is scheduled independently by FSRS now (its own due date, not gated by
-    // word.levelState.level), so it's selected separately here and merged in — everything
-    // else above is exactly the pre-FSRS logic, untouched.
-    const fsrsItems = DueQueue.buildDimensionItems(pool, 'recognition', new Date());
+    // Recognition and production are each scheduled independently by FSRS now (their own
+    // due dates, not gated by word.levelState.level), so they're selected separately here
+    // and merged in — everything else above is exactly the pre-FSRS logic, untouched.
+    // Production has one extra gate: it only surfaces once a word's recognition has
+    // reached PRODUCTION_UNLOCK_STABILITY — an engineering sequencing policy, not a
+    // validated learning principle, recomputed live (not a persisted "unlocked" flag).
+    const now = new Date();
+    const recognitionItems = DueQueue.buildDimensionItems(pool, 'recognition', now);
+    const productionItems = DueQueue.buildDimensionItems(pool, 'production', now,
+      w => w.fsrs.recognition.stability >= FSRSScheduler.PRODUCTION_UNLOCK_STABILITY);
+    const fsrsItems = DueQueue.mergeQueues(recognitionItems, productionItems);
     return DueQueue.mergeQueues(fsrsItems, legacyItems);
   },
 
@@ -902,9 +909,9 @@ const Practice = {
 
   generateQuestion(item){
     if(item.track==='fsrs'){
-      // Reuses the existing recognition question generator/UI unchanged — only what
+      // Reuses the existing per-dimension question generators/UI unchanged — only what
       // happens after grading (see handleGraded) differs for an FSRS-track item.
-      const q = this.genRecognition(item.word);
+      const q = item.dimension==='production' ? this.genProduction(item.word) : this.genRecognition(item.word);
       q.track = 'fsrs';
       q.dimension = item.dimension;
       return q;
@@ -930,14 +937,21 @@ const Practice = {
       params: settings.params || undefined
     });
     word.fsrs[dimension] = result.card;
-    Storage.state.fsrsReviewLog.push({
+    const logEntry = {
       ts: Date.now(), wordId: word.id, dimension, rating: ratingKey,
       predictedR: result.predictedR, outcome: ratingKey!=='again',
       desiredRetentionAtSchedule: settings.desiredRetention,
       stabilityBefore: before.stability, stabilityAfter: result.card.stability,
       difficultyBefore: before.difficulty, difficultyAfter: result.card.difficulty,
       elapsedDays: result.card.elapsed_days, scheduledDays: result.card.scheduled_days
-    });
+    };
+    // Debug breadcrumb for the production promotion policy: what recognition's stability
+    // was at the moment production got its first-ever review. Not used by any analysis
+    // this app builds — just inspectable if the unlock threshold ever needs revisiting.
+    if(dimension==='production' && before.state===0){
+      logEntry.recognitionStabilityAtUnlock = word.fsrs.recognition.stability;
+    }
+    Storage.state.fsrsReviewLog.push(logEntry);
     if(Storage.state.fsrsReviewLog.length>FSRS_REVIEW_LOG_CAP){
       Storage.state.fsrsReviewLog = Storage.state.fsrsReviewLog.slice(-FSRS_REVIEW_LOG_CAP);
     }

@@ -50,6 +50,22 @@ test('buildDimensionItems is generic across dimension keys (Phase 2 production r
   assert.equal(items[0].dimension, 'production');
 });
 
+test('buildDimensionItems applies an isEligible gate on top of due (Phase 2 production unlock)', () => {
+  const words = [
+    { id: 'unlocked', teaching: { completed: true }, fsrs: { recognition: { stability: 30 }, production: { due: '2026-01-01T00:00:00Z' } } },
+    { id: 'locked', teaching: { completed: true }, fsrs: { recognition: { stability: 5 }, production: { due: '2026-01-01T00:00:00Z' } } }
+  ];
+  const isEligible = w => w.fsrs.recognition.stability >= 21;
+  const items = DueQueue.buildDimensionItems(words, 'production', new Date('2026-01-02T00:00:00Z'), isEligible);
+  assert.deepEqual(items.map(i => i.word.id), ['unlocked']);
+});
+
+test('buildDimensionItems with no isEligible argument behaves exactly as before (recognition has no gate)', () => {
+  const words = [word('a', { due: '2026-01-01T00:00:00Z' })];
+  const items = DueQueue.buildDimensionItems(words, 'recognition', new Date('2026-01-02T00:00:00Z'));
+  assert.equal(items.length, 1);
+});
+
 test('mergeQueues preserves each input list\'s internal order', () => {
   const a = [{ id: 'a1' }, { id: 'a2' }];
   const b = [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }, { id: 'b4' }];
