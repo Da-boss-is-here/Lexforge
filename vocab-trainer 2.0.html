@@ -440,6 +440,11 @@ const Utils = {
   // reinterpreted through a local<->UTC conversion (which used to silently cancel
   // out addDays() for anyone east of Greenwich, freezing SRS/chart dates in place).
   todayISO(){ const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); },
+  // Same local Y/M/D reading as todayISO(), but for an arbitrary ms timestamp (e.g.
+  // word.firstMasteryAt) instead of "now" -- use this instead of
+  // new Date(ms).toISOString().slice(0,10), which reads the UTC calendar date and will
+  // disagree with every other date string in this file by up to a day.
+  isoFromMs(ms){ const d = new Date(ms); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); },
   addDays(iso, n){ const [y,m,d] = iso.split('-').map(Number); const dt = new Date(Date.UTC(y,m-1,d)); dt.setUTCDate(dt.getUTCDate()+n); return dt.toISOString().slice(0,10); },
   diffDays(a,b){ const [ay,am,ad]=a.split('-').map(Number), [by,bm,bd]=b.split('-').map(Number); return Math.round((Date.UTC(by,bm-1,bd)-Date.UTC(ay,am-1,ad))/86400000); },
   fmtDate(iso){ if(!iso) return '—'; const [y,m,d]=iso.split('-').map(Number); return new Date(Date.UTC(y,m-1,d)).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}); },
@@ -3218,8 +3223,11 @@ function computeFastestMastery(words){
   let best = null;
   (words||[]).forEach(w=>{
     if(!w || typeof w.firstMasteryAt!=='number' || !w.created) return;
-    const createdMs = new Date(w.created+'T00:00:00.000Z').getTime();
-    const days = (w.firstMasteryAt - createdMs) / 86400000;
+    // w.created is a local YYYY-MM-DD string (like every other date string in this file) --
+    // diffDays takes two of those, so firstMasteryAt (a ms timestamp) is read through
+    // Utils.isoFromMs first rather than parsed as UTC midnight, which used to put the
+    // baseline off by up to a day and bake that offset into the subtraction.
+    const days = Utils.diffDays(w.created, Utils.isoFromMs(w.firstMasteryAt));
     if(days<0) return; // guards against clock skew rather than showing a negative duration
     if(!best || days<best.days) best = { wordId: w.id, word: w.word, days };
   });
@@ -3654,9 +3662,13 @@ const Analytics = {
     const earliest = createdDates[0] || today;
     const spanDays = Utils.diffDays(earliest, today);
     const start = spanDays < 29 ? earliest : Utils.addDays(today, -29);
+    // isoFromMs reads the local calendar date, matching `cursor`/`today` (both built from
+    // Utils.todayISO()/addDays, local) -- toISOString().slice(0,10) reads the UTC date instead,
+    // which disagreed with the local frame by up to a day and could push a late-evening-local
+    // firstMasteryAt past the `cursor <= today` cutoff, collapsing this line to 0 for that word.
     const masteryDates = words
       .filter(w=>typeof w.firstMasteryAt==='number')
-      .map(w=>new Date(w.firstMasteryAt).toISOString().slice(0,10));
+      .map(w=>Utils.isoFromMs(w.firstMasteryAt));
     const labels = [], added = [], reached = [];
     let cursor = start;
     let guard = 0;
