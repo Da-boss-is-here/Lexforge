@@ -575,7 +575,7 @@ const WORD_TYPES = [
 
 function freshDims(){
   const d = {};
-  DIM_KEYS.forEach(k=>{ d[k] = { status:'Not assessed', success:0, fail:0, everAchievedAt:null }; });
+  DIM_KEYS.forEach(k=>{ d[k] = { status:'Not assessed', success:0, fail:0, everAchievedAt:null, successAtReset:0 }; });
   return d;
 }
 function repairDims(raw){
@@ -591,6 +591,12 @@ function repairDims(raw){
         // happened, so it starts null (see DimModel.record for where it gets stamped going
         // forward) rather than fabricating a date from repair time.
         d[k].everAchievedAt = typeof raw[k].everAchievedAt==='number' ? raw[k].everAchievedAt : null;
+        // Transitional: a dim already carrying a stale lifetime success count from a
+        // pre-successAtReset reset has no recorded snapshot to repair -- defaults to 0, same
+        // as freshDims, so it re-achieves on its next success exactly like it would have
+        // before this fix. That reset's history is genuinely unrecoverable (there was no
+        // field to record it in), so this is accepted rather than special-cased.
+        d[k].successAtReset = Number(raw[k].successAtReset)||0;
       }
     });
   }
@@ -607,7 +613,11 @@ const DimModel = {
     if(!d) return;
     if(success){
       d.success++;
-      d.status = d.success>=2 ? 'Achieved' : 'Developing';
+      // successAtReset (0 for a dim that's never been reset) is subtracted so the threshold
+      // reads "successes since the last reset," not the raw lifetime total -- see resetDim's
+      // comment for why the lifetime total alone re-achieves a dim after a single post-reset
+      // success.
+      d.status = (d.success-(d.successAtReset||0))>=2 ? 'Achieved' : 'Developing';
       // Phase E: set once, the first time this dim reaches 'Achieved' -- guarded on
       // everAchievedAt itself (not on "just transitioned"), so a dim imported already at
       // 'Achieved' with no stamp (see repairDims) gets one on its next success rather than
@@ -705,7 +715,7 @@ function validateAndRepair(raw){
   if(Array.isArray(raw.words)){
     out.words = raw.words.filter(w=>w && typeof w==='object' && w.word).map(repairWord);
   }
-  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category));
+  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category) && typeof e.date==='string');
   if(raw.settings && typeof raw.settings==='object'){
     out.settings.examDate = typeof raw.settings.examDate==='string' ? raw.settings.examDate : null;
     out.settings.theme = ['system','light','dark'].includes(raw.settings.theme) ? raw.settings.theme : 'system';
@@ -855,6 +865,14 @@ const Storage = {
     }
     if(mode==='replace'){
       this.state = incoming;
+      // Cleared after the swap, not before -- clearing first would only null out the
+      // pre-swap state's field (about to be discarded anyway) and leave the swap's own
+      // practiceSession, plus the in-memory Practice.session (still holding live word object
+      // references from the just-replaced state), in place. Doing it after the swap clears
+      // the swap's own practiceSession along with the in-memory session that was referencing
+      // now-deleted words.
+      this.state.practiceSession = null;
+      Practice.session = null;
       this.backfillDailyActivity();
     } else {
       const existingIds = new Set(this.state.words.map(w=>w.id));
@@ -1188,8 +1206,12 @@ const WordModel = {
     const last3 = rh.slice(-3);
     const noRecentErrors = last3.length>=3 && last3.every(a=>a.correct);
     const dims = word.dims || {};
-    const indepOk = dims.independentProduction && dims.independentProduction.success>=2;
-    const novelOk = dims.novelApplication && dims.novelApplication.success>=1;
+    // success-successAtReset ("successes since the last reset"), not raw success -- an Exam
+    // Ready word whose production dims were reset by a real production error (see
+    // ErrorIntegration.recordProductionError -> WordModel.resetDim) would otherwise still
+    // read as Exam Ready off the pre-reset lifetime count. See resetDim's comment.
+    const indepOk = dims.independentProduction && (dims.independentProduction.success-(dims.independentProduction.successAtReset||0))>=2;
+    const novelOk = dims.novelApplication && (dims.novelApplication.success-(dims.novelApplication.successAtReset||0))>=1;
     const examReady = !!(indepOk && novelOk && noRecentErrors);
     const strong = last5Rate>=0.8 && !hasRecentFail && word.levelState.level>=3 && word.srs.interval>=10;
     if(examReady){
@@ -1243,7 +1265,10 @@ const WordModel = {
 
   hasRecentError(word, days){
     days = days==null ? 7 : days;
-    return Storage.state.errorLog.some(e=>e.wordId===word.id && Utils.diffDays(e.date, Utils.todayISO())<=days);
+    // typeof e.date==='string' guards Utils.diffDays, which calls .split('-') on both
+    // arguments -- validateAndRepair now filters out dateless errorLog entries too, but this
+    // stays defensive against any entry pushed straight onto Storage.state.errorLog in memory.
+    return Storage.state.errorLog.some(e=>e.wordId===word.id && typeof e.date==='string' && Utils.diffDays(e.date, Utils.todayISO())<=days);
   },
 
   resetDim(word, dimKey){
@@ -1258,8 +1283,16 @@ const WordModel = {
     // tallies (the coverage table's Fails column, and hasFailures gating the Practice
     // button), not a mirror of current status, so zeroing them here would silently change
     // what those displayed numbers mean.
+    // successAtReset snapshots the lifetime success count as of this reset, so readers that
+    // need "successes since the last reset" (DimModel.record's Achieved threshold,
+    // computeMastery's Exam Ready gate, Exam.computeTargetPool's eligibility check) can
+    // compare (success - successAtReset) instead of the raw lifetime total -- otherwise a
+    // dim with 2+ lifetime successes re-achieves after a single post-reset success, and an
+    // Exam Ready word whose production dims were just reset by a real error stays Exam
+    // Ready. freshDims/repairDims default this to 0, so a dim that's never been reset has
+    // success - 0 === success and every one of those readers behaves exactly as before.
     const { everAchievedAt, success, fail } = word.dims[dimKey];
-    word.dims[dimKey] = { status:'Not assessed', success: success||0, fail: fail||0, everAchievedAt: everAchievedAt||null };
+    word.dims[dimKey] = { status:'Not assessed', success: success||0, fail: fail||0, everAchievedAt: everAchievedAt||null, successAtReset: success||0 };
   }
 };
 
@@ -1314,13 +1347,29 @@ const Practice = {
     opts = opts || {};
     const words = Storage.state.words;
     let pool = words.filter(w=>w.teaching && w.teaching.completed);
-    if(opts.category) pool = pool.filter(w => (w.errorCounts[opts.category]||0) > 0);
+
+    // Category-specific drilling (e.g. "practice my Collocation errors") selects directly
+    // from the category pool rather than being intersected with the due/overdue/dueToday
+    // buckets below -- a word with a logged error but a nextReview 20 days out is still a
+    // valid target for category practice. Intersecting with SRS due-state used to silently
+    // produce an empty queue (and a "Nothing to practice right now" toast) for exactly that
+    // word. Legacy-only, same as before: FSRS-scheduled recognition isn't tied to an error
+    // category today.
+    if(opts.category){
+      const categoryPool = pool.filter(w => (w.errorCounts[opts.category]||0) > 0);
+      return Utils.shuffle(categoryPool).map(w=>({ track:'legacy', word:w, level: Math.max(2, w.levelState.level-1) }));
+    }
+
     // Group by SRS priority (overdue first, then recently-failed, then due-today), but
     // shuffle within each group so the word order isn't the same every session — only
     // the exact due date should break ties, not each word's position in the word list.
     const overdue = Utils.shuffle(pool.filter(w=>WordModel.isOverdue(w))).sort((a,b)=>a.srs.nextReview.localeCompare(b.srs.nextReview));
     const failedRecent = Utils.shuffle(pool.filter(w=>{
-      const last = w.history[w.history.length-1];
+      // Matches updateLadder/computeMastery: teaching-phase entries aren't retrieval
+      // attempts, so a word whose final teaching step was wrong shouldn't be classified as
+      // "recently failed" off that entry.
+      const retrieval = w.history.filter(h=>h.phase!=='teaching');
+      const last = retrieval[retrieval.length-1];
       return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1 && !overdue.includes(w);
     }));
     const dueToday = Utils.shuffle(pool.filter(w=>WordModel.isDueToday(w) && !overdue.includes(w) && !failedRecent.includes(w)));
@@ -1332,11 +1381,7 @@ const Practice = {
     // dedupe
     const seen = new Set();
     queue = queue.filter(w=>{ if(seen.has(w.id)) return false; seen.add(w.id); return true; });
-    const legacyItems = queue.map(w=>({ track:'legacy', word:w, level: opts.category ? Math.max(2, w.levelState.level-1) : w.levelState.level }));
-
-    // Category-specific drilling (e.g. "practice my Collocation errors") stays legacy-only —
-    // FSRS-scheduled recognition isn't tied to an error category today.
-    if(opts.category) return legacyItems;
+    const legacyItems = queue.map(w=>({ track:'legacy', word:w, level: w.levelState.level }));
 
     // Recognition, meaningRecall (cued recall), and production are each scheduled
     // independently by FSRS now (their own due dates, not gated by word.levelState.level),
@@ -1581,7 +1626,12 @@ const Practice = {
       idx: s.idx,
       reviewing: !!s.reviewing,
       savedIdx: s.savedIdx==null ? null : s.savedIdx,
-      queue: s.queue.map(item=>({ wordId: item.word.id, level: item.level, drillType: item.drillType||null })),
+      // track/dimension identify an FSRS-track item (see generateQuestion's item.track==='fsrs'
+      // branch) -- dropping them here used to regenerate every remaining FSRS item as a legacy
+      // ladder question after a mid-session refresh: word.fsrs[dimension] never got updated, no
+      // fsrsReviewLog row was written, and attempts[].track came out 'legacy' for what was
+      // actually a recognition/meaningRecall/production review.
+      queue: s.queue.map(item=>({ wordId: item.word.id, level: item.level, drillType: item.drillType||null, track: item.track||null, dimension: item.dimension||null })),
       results: s.results.map(r=>({
         idx: r.idx, wordId: r.word.id, userVal: r.userVal, correct: r.correct,
         rating: r.rating||null, category: r.category||null, question: this.serializeQuestion(r.question)
@@ -1597,13 +1647,15 @@ const Practice = {
     if(!saved) return;
     const queue = saved.queue.map(item=>{
       const word = Storage.state.words.find(w=>w.id===item.wordId);
-      return word ? { word, level: item.level, drillType: item.drillType||undefined } : null;
+      return word ? { word, level: item.level, drillType: item.drillType||undefined, track: item.track||undefined, dimension: item.dimension||undefined } : null;
     }).filter(Boolean);
     if(!queue.length){ this.clearPersisted(); return; }
     const results = (saved.results||[]).map(r=>{
       const word = Storage.state.words.find(w=>w.id===r.wordId);
       if(!word) return null;
-      return { idx:r.idx, word, question:this.deserializeQuestion(r.question), userVal:r.userVal, correct:r.correct, rating:r.rating, category:r.category };
+      const question = this.deserializeQuestion(r.question);
+      if(!question) return null; // dropped rather than left null -- renderPracticeReviewCard reads result.question directly
+      return { idx:r.idx, word, question, userVal:r.userVal, correct:r.correct, rating:r.rating, category:r.category };
     }).filter(Boolean);
     this.session = {
       queue, results, mode: saved.mode,
@@ -1699,7 +1751,11 @@ const Views = {
     const stages = { New:0, Learning:0, Unstable:0, Stable:0, 'Exam Ready':0 };
     words.forEach(w=> stages[WordModel.computeMastery(w)]++ );
     const recentlyFailed = words.filter(w=>{
-      const last = w.history[w.history.length-1];
+      // Matches updateLadder/computeMastery/buildDueQueue's failedRecent: teaching-phase
+      // entries aren't retrieval attempts, so a word whose final teaching step was wrong
+      // shouldn't be classified as "recently failed" off that entry.
+      const retrieval = w.history.filter(h=>h.phase!=='teaching');
+      const last = retrieval[retrieval.length-1];
       return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1;
     });
     const catTotals = {};
@@ -2262,7 +2318,11 @@ const Views = {
     });
     el.querySelector('#resetBtn').addEventListener('click', ()=>{
       Modal.confirm('Erase ALL data? This cannot be undone. Consider exporting a backup first.', ()=>{
-        Storage.state = defaultState(); Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
+        // Practice.session holds live word object references from the state that's about to
+        // be discarded -- without clearing it, a practice session already open in another tab
+        // (or resumed via Practice.restore before this reload) would keep operating on
+        // now-deleted words.
+        Storage.state = defaultState(); Practice.session = null; Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
       });
     });
   },
@@ -2343,10 +2403,15 @@ const Views = {
       el.innerHTML = '<div class="card center"><h2>Session Complete</h2><p>'+summary+'</p>' +
         '<div class="btn-row" style="justify-content:center;"><button class="btn primary" id="doneBtn">Back to Dashboard</button></div></div>';
       el.querySelector('#doneBtn').addEventListener('click', ()=>{
-        if(Session.active) Session.finishPhase(results);
+        // finishPhase, on the last phase, calls Session.finish() -- which sets active=false
+        // and renders its own summary into view-practice. Reading Session.active *after* that
+        // call was stale: it always came back false, so this used to also call
+        // showTab('dashboard') and stomp the summary the user never got to see.
+        const wasActive = Session.active;
+        if(wasActive) Session.finishPhase(results);
         Practice.session = null;
         Practice.clearPersisted();
-        if(!Session.active) App.showTab('dashboard');
+        if(!wasActive) App.showTab('dashboard');
       });
       return;
     }
@@ -2835,8 +2900,13 @@ const Exam = {
   },
 
   computeTargetPool(){
+    // success-successAtReset, not raw success -- see WordModel.resetDim's comment. Without
+    // this, a word whose independentProduction was reset by a real production error (which
+    // also logs the error and pulls the word into today's due queue -- see
+    // ErrorIntegration.recordProductionError) still reads as eligible off its pre-reset
+    // lifetime success count.
     const eligible = Storage.state.words.filter(w=> w.teaching && w.teaching.completed &&
-      w.dims.independentProduction && w.dims.independentProduction.success>=1 &&
+      w.dims.independentProduction && (w.dims.independentProduction.success-(w.dims.independentProduction.successAtReset||0))>=1 &&
       !WordModel.hasRecentError(w,7));
     return Utils.shuffle(eligible).slice(0,8);
   },
@@ -2878,6 +2948,10 @@ const Exam = {
 
   start(){
     if(!this.prompt.trim()){ Utils.toast('Enter a writing prompt first.'); return; }
+    // A double-click on Start Exam (or any re-entry to start() while already running) used to
+    // leave the previous interval ticking alongside the new one, decrementing remainingSec
+    // twice per second.
+    if(this.timerHandle){ clearInterval(this.timerHandle); this.timerHandle=null; }
     this.status='running';
     this.text='';
     this.remainingSec = Math.round(this.minutes*60);
