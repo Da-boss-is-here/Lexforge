@@ -678,8 +678,8 @@ function defaultState(){
     // Attempt-log schema groundwork (Phase F) for F+1's arm-tagged comparison view -- a flat,
     // cross-track record of every graded attempt (practice/teaching/writing/exam), normalized
     // enough to compare across arms. Written alongside word.history (see WordModel.logAttempt),
-    // not a replacement for it -- nothing reads this yet. {ts, wordId, level, correct, phase,
-    // track, hinted, errorCategory}
+    // not a replacement for it -- nothing reads this yet. {ts, date, wordId, level, correct,
+    // phase, track, dimension, rating, hinted, errorCategory}
     attempts: [],
     practiceSession: null, // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
     // Phase C groundwork for Phase D analytics -- infrastructure only, nothing reads these yet.
@@ -1054,21 +1054,17 @@ const WordModel = {
 
   logAttempt(word, level, correct, meta){
     meta = meta || {};
-    // attemptsPhase/track are attempts[]-only overrides (see below) -- stripped out so they
-    // never leak into the history entry, which keeps its existing shape unchanged. ts is
-    // pulled out too so it's set exactly once instead of via two separate defaultings.
-    const { ts: metaTs, attemptsPhase, track, ...histMeta } = meta;
+    // attemptsPhase/track/dimension are attempts[]-only fields -- stripped out so they never
+    // leak into the history entry, which keeps its existing shape unchanged (history has never
+    // had a dimension field and shouldn't gain one now). rating is NOT stripped -- it stays in
+    // histMeta so it lands on the history entry same as always, and is also read onto the
+    // attempts[] entry below. ts is pulled out too so it's set exactly once instead of via two
+    // separate defaultings.
+    const { ts: metaTs, attemptsPhase, track, dimension, ...histMeta } = meta;
     const ts = typeof metaTs==='number' ? metaTs : Date.now();
     const entry = Object.assign({ ts, date: Utils.todayISO(), level, correct }, histMeta);
     word.history.push(entry);
     if(word.history.length>200) word.history = word.history.slice(-200);
-    // Phase D closeout: `teaching` is "teaching-step attempts" (matches how the backfill
-    // counts it -- one per history entry with phase==='teaching'), bumped once here so
-    // every one of the Teaching module's several call sites is covered without touching
-    // each of them individually. Non-teaching reviews/correct are bumped at their own call
-    // sites (Practice.handleGraded, ErrorIntegration) instead of here, since those already
-    // do it post-grade with the rating in hand -- bumping them here too would double-count.
-    if(entry.phase==='teaching') DailyActivity.bump(entry.date, { teaching: 1 });
 
     // Phase F: attempts[] mirrors history but normalized for cross-track comparison. phase can
     // be overridden via meta.attemptsPhase without touching history's own phase field (used by
@@ -1080,12 +1076,31 @@ const WordModel = {
     // "level" during teaching, 0 is just a placeholder history has always used. track defaults
     // to null for callers that don't pass one (teaching has no track concept).
     const resolvedPhase = attemptsPhase!==undefined ? attemptsPhase : (entry.phase || null);
+
+    // Phase D closeout: `teaching` is "teaching-step attempts" (matches how the backfill
+    // counts it -- one per history entry with phase==='teaching'), bumped once here so
+    // every one of the Teaching module's several call sites is covered without touching
+    // each of them individually. Non-teaching reviews/correct are bumped at their own call
+    // sites (Practice.handleGraded, ErrorIntegration) instead of here, since those already
+    // do it post-grade with the rating in hand -- bumping them here too would double-count.
+    // Reads resolvedPhase (not entry.phase directly) to stay in lockstep with the attempts[]
+    // write below -- only matters for a caller that sets attemptsPhase without entry.phase,
+    // which no current call site does, but the two should never drift apart.
+    if(resolvedPhase==='teaching') DailyActivity.bump(entry.date, { teaching: 1 });
+
+    // date/rating/dimension close the gap between attempts[]'s declared 11-field schema and
+    // what actually shipped: date was trivially available from entry.date; rating is the only
+    // way to tell a legacy-track Hard from an Easy success apart (legacy events have no
+    // fsrsReviewLog row to join on for that); dimension is the FSRS-track join key, sourced
+    // from meta.dimension since it was never otherwise plumbed through to this call.
     Storage.state.attempts.push({
-      ts, wordId: word.id,
+      ts, date: entry.date, wordId: word.id,
       level: resolvedPhase==='teaching' ? null : level,
       correct,
       phase: resolvedPhase,
       track: track!==undefined ? track : null,
+      dimension: dimension!==undefined ? dimension : null,
+      rating: entry.rating || null,
       hinted: !!entry.hinted,
       errorCategory: entry.errorCategory || null
     });
@@ -2479,7 +2494,7 @@ const Views = {
     // corrected on try 2 logged only a single {correct:true}, biasing accuracy upward on every
     // hinted item. Log the failed first attempt through the same path as everything else so it
     // lands in both history and attempts[] before the hint is shown.
-    WordModel.logAttempt(q.word, q.level, false, { hinted:false, track: q.track||'legacy', attemptsPhase:'practice' });
+    WordModel.logAttempt(q.word, q.level, false, { rating:'again', hinted:false, track: q.track||'legacy', attemptsPhase:'practice', dimension: q.dimension });
     const answer = q.correctAnswer;
     const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
     answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
@@ -2564,7 +2579,7 @@ const Views = {
         // Shared ts for this graded event -- threaded into logAttempt (history + attempts[])
         // and gradeFsrs (FSRSScheduler.grade + the fsrsReviewLog entry) so all three line up.
         const ts = Date.now();
-        WordModel.logAttempt(word, question.level, false, { ts, rating:'again', errorCategory: chosenCat, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice' });
+        WordModel.logAttempt(word, question.level, false, { ts, rating:'again', errorCategory: chosenCat, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice', dimension: question.dimension });
         // skipDimRecord: Practice writes dims by exercised question type (recordDimForQuestion
         // below), not by error category -- without this, logError's own CATEGORY_TO_DIM write
         // double-counted the failure (e.g. a cued+Spelling miss used to write both
@@ -2588,7 +2603,7 @@ const Views = {
     } else {
       const finish = (rating)=>{
         const ts = Date.now();
-        WordModel.logAttempt(word, question.level, true, { ts, rating, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice' });
+        WordModel.logAttempt(word, question.level, true, { ts, rating, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice', dimension: question.dimension });
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, rating, ts);
         } else {
@@ -2817,8 +2832,14 @@ const Exam = {
   },
 
   drawConfig(){
-    const pool = this.computeTargetPool();
-    this.targetWords = pool;
+    // Only compute a pool when there isn't one yet -- drawConfig used to unconditionally
+    // recompute on every render, so a minutes-preset click, a custom-minutes keystroke, or
+    // "New Prompt" (all of which re-render config) silently reshuffled the target vocabulary
+    // out from under the user while they were still configuring. "Reshuffle Words" bypasses
+    // this by clearing targetWords itself before calling drawConfig (see its handler below);
+    // "Start Another Exam" clears it too, so the next exam starts with a fresh pool.
+    if(!this.targetWords.length) this.targetWords = this.computeTargetPool();
+    const pool = this.targetWords;
     const el = this.container;
     const presetMinutes = [15,20,30,45];
     el.innerHTML = '<div class="card"><h2>⏱ Timed Exam Deployment</h2>' +
@@ -2841,7 +2862,7 @@ const Exam = {
     el.querySelectorAll('.min-btn').forEach(b=>b.addEventListener('click', ()=>{ this.minutes = +b.dataset.m; this.drawConfig(); }));
     el.querySelector('#customMinutes').addEventListener('input', (e)=>{ const v=+e.target.value; if(v>0) this.minutes = v; });
     const reshuffleBtn = el.querySelector('#reshuffleBtn');
-    if(reshuffleBtn) reshuffleBtn.addEventListener('click', ()=>this.drawConfig());
+    if(reshuffleBtn) reshuffleBtn.addEventListener('click', ()=>{ this.targetWords = this.computeTargetPool(); this.drawConfig(); });
     el.querySelector('#startExamBtn').addEventListener('click', ()=>this.start());
   },
 
@@ -2992,7 +3013,7 @@ const Exam = {
       (incorrect ? '<p class="field-hint">'+incorrect+' word(s) were scheduled for targeted retrieval practice.</p>' : '') +
       '<button type="button" class="btn primary" id="newExamBtn">Start Another Exam</button></div>';
     this.container.querySelector('#newExamBtn').addEventListener('click', ()=>{
-      this.status='config'; this.prompt=''; this.text=''; this.checklist={};
+      this.status='config'; this.prompt=''; this.text=''; this.checklist={}; this.targetWords=[];
       this.render(this.container);
     });
   }
@@ -4274,7 +4295,11 @@ const Teaching = {
         const correct = Utils.normalize(val)===Utils.normalize(word.word);
         this.state.spellDone = true;
         DimModel.record(word, 'formRecall', correct);
-        if(!correct) WordModel.logError(word, 'Spelling', 0);
+        // skipDimRecord: CATEGORY_TO_DIM['Spelling'] is 'formRecall' -- without this, the same
+        // wrong spelling would double-increment formRecall.fail, once here via DimModel.record
+        // above and once via logError's own category-to-dim write. Same shape as the Practice
+        // handleGraded double-count fixed earlier, just unreached by that fix's scope.
+        if(!correct) WordModel.logError(word, 'Spelling', 0, { skipDimRecord: true });
         WordModel.logAttempt(word, 0, correct, { phase:'teaching', step:5, part:'spelling' });
         Storage.save();
         const feedbackEl = document.getElementById('teachFeedback');
@@ -4400,6 +4425,13 @@ const Teaching = {
           '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
         feedbackEl.querySelectorAll('.error-cats button').forEach(btn=>{
           btn.addEventListener('click', ()=>{
+            // Deliberately no skipDimRecord here, unlike wireStep5/Practice: this step already
+            // passed (the dims:true write above already ran), but the user is retroactively
+            // naming a real slip they made getting there -- logError's category-to-dim write
+            // records that as a fail on CATEGORY_TO_DIM[category], which can downgrade that
+            // dim's status from Achieved to Developing even though the retrieval itself
+            // succeeded. That's intentional: "passed, but only after a slip" is exactly the
+            // signal this diagnostic exists to capture, not a double-count of the same failure.
             WordModel.logError(word, btn.dataset.c, 0);
             word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: btn.dataset.c });
             Storage.save();
