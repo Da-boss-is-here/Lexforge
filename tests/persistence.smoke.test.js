@@ -341,3 +341,71 @@ test('Practice.gradeFsrs never compresses when no exam date is set -- identical 
   assert.ok(!logEntry.examCompressed);
   assert.equal(word.fsrs.meaningRecall.due, naturalResult.card.due);
 });
+
+/* ---- Phase 5 micro-fixes: mnemonic fading + dims-status cross-contamination ---- */
+
+function makeWordWithMnemonic(E) {
+  return E.WordModel.create({
+    word: 'sedulous', meaning: 'diligent', form: 'adjective', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [], wordType: 'general'
+  });
+}
+
+test('WordModel.mnemonicFaded also fades once an FSRS-tracked dimension reaches PRODUCTION_UNLOCK_STABILITY, even with zero legacy easeStreak', () => {
+  const { exports: E } = buildSandbox();
+  const word = makeWordWithMnemonic(E);
+  word.mnemonic = 'said-you\'ll-us -- diligently keeping a promise';
+  assert.equal(word.srs.easeStreak, 0);
+  assert.equal(E.WordModel.mnemonicFaded(word), false, 'sanity: not faded yet -- no legacy streak, all FSRS dims fresh');
+
+  word.fsrs.recognition.stability = FSRSScheduler.PRODUCTION_UNLOCK_STABILITY; // reached entirely via FSRS review, never touching easeStreak
+  assert.equal(E.WordModel.mnemonicFaded(word), true, 'should fade once FSRS stability alone clears the threshold');
+});
+
+test('WordModel.mnemonicFaded still fades via the legacy easeStreak path -- pre-existing behavior unchanged', () => {
+  const { exports: E } = buildSandbox();
+  const word = makeWordWithMnemonic(E);
+  word.mnemonic = 'hint';
+  word.srs.easeStreak = 4;
+  assert.equal(E.WordModel.mnemonicFaded(word), true);
+});
+
+test('WordModel.mnemonicFaded returns false with no mnemonic regardless of FSRS stability', () => {
+  const { exports: E } = buildSandbox();
+  const word = makeWordWithMnemonic(E);
+  word.mnemonic = '';
+  word.fsrs.production.stability = 999;
+  assert.equal(E.WordModel.mnemonicFaded(word), false);
+});
+
+test('WordModel.logError does not downgrade an Achieved dim\'s status when the fail is off-target for the question type actually tested', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeWordWithMnemonic(E);
+  word.dims.meaningRecall = { status: 'Achieved', success: 2, fail: 0 };
+  // A Cloze question (tests contextualComprehension) went wrong, tagged "Meaning" -- CATEGORY_TO_DIM
+  // maps Meaning -> meaningRecall, but meaningRecall was never what this question tested.
+  E.WordModel.logError(word, 'Meaning', 3, ['contextualComprehension']);
+  assert.equal(word.dims.meaningRecall.status, 'Achieved', 'status should not be knocked down by an off-target fail');
+  assert.equal(word.dims.meaningRecall.fail, 1, 'the fail count itself must still increment exactly as before');
+});
+
+test('WordModel.logError still downgrades an Achieved dim when the fail is on-target for the question type actually tested', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeWordWithMnemonic(E);
+  word.dims.meaningRecall = { status: 'Achieved', success: 2, fail: 0 };
+  // A Cued Recall question (tests meaningRecall/formRecall) went wrong and was tagged "Meaning".
+  E.WordModel.logError(word, 'Meaning', 2, ['meaningRecall', 'formRecall']);
+  assert.equal(word.dims.meaningRecall.status, 'Developing', 'on-target fail must still downgrade, exactly as before');
+  assert.equal(word.dims.meaningRecall.fail, 1);
+});
+
+test('WordModel.logError preserves the original always-downgrade behavior when no testedDims is passed (Teaching/ErrorIntegration callers, unchanged)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeWordWithMnemonic(E);
+  word.dims.grammar = { status: 'Achieved', success: 2, fail: 0 };
+  E.WordModel.logError(word, 'Grammar', 0); // 3-arg call, exactly as Teaching/ErrorIntegration still call it
+  assert.equal(word.dims.grammar.status, 'Developing');
+});

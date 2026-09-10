@@ -479,6 +479,19 @@ const CATEGORY_TO_DIM = {
   Grammar:'grammar', Collocation:'collocation', Register:'contextualComprehension', Selection:'semanticDiscrimination'
 };
 
+// Phase 5 micro-fix: which dim(s) a given Practice question type actually tests, so a fail
+// logged against an unrelated dim (via CATEGORY_TO_DIM) doesn't downgrade that unrelated dim's
+// already-Achieved status. Mirrors Practice.recordDimForQuestion's success-side mapping by hand
+// (kept separate rather than refactored, to keep this fix isolated) -- if recordDimForQuestion's
+// dim choices change, update this alongside it.
+const QUESTION_TYPE_TO_DIMS = {
+  recognition: ['meaningRecognition'],
+  cued: ['meaningRecall', 'formRecall'],
+  cloze: ['contextualComprehension'],
+  drill: ['novelApplication'],
+  production: ['independentProduction']
+};
+
 const DIMENSIONS = [
   {key:'formRecognition', label:'Form Recognition'},
   {key:'formRecall', label:'Form Recall (Spelling)'},
@@ -522,7 +535,13 @@ function repairDims(raw){
   return d;
 }
 const DimModel = {
-  record(word, dimKey, success){
+  // `testedDims` (optional): the dim(s) the current question/step was actually testing
+  // (see QUESTION_TYPE_TO_DIMS). Phase 5 micro-fix: success/fail counts are untouched either
+  // way -- only whether an already-Achieved status gets downgraded changes. A fail against
+  // dimKey only downgrades an Achieved status if dimKey is among testedDims (or testedDims
+  // wasn't provided at all, preserving the original always-downgrade behavior for callers
+  // that don't pass it -- Teaching steps and ErrorIntegration are unchanged).
+  record(word, dimKey, success, testedDims){
     const d = word.dims && word.dims[dimKey];
     if(!d) return;
     if(success){
@@ -530,7 +549,8 @@ const DimModel = {
       d.status = d.success>=2 ? 'Achieved' : 'Developing';
     } else {
       d.fail++;
-      d.status = d.status==='Achieved' ? 'Developing' : 'Developing';
+      const unrelated = d.status==='Achieved' && Array.isArray(testedDims) && !testedDims.includes(dimKey);
+      if(!unrelated) d.status = 'Developing';
     }
   }
 };
@@ -792,11 +812,11 @@ const WordModel = {
     if(word.history.length>200) word.history = word.history.slice(-200);
   },
 
-  logError(word, category, level){
+  logError(word, category, level, testedDims){
     word.errorCounts[category] = (word.errorCounts[category]||0)+1;
     Storage.state.errorLog.push({ ts: Date.now(), date: Utils.todayISO(), wordId: word.id, word: word.word, category, level });
     const dimKey = CATEGORY_TO_DIM[category];
-    if(dimKey) DimModel.record(word, dimKey, false);
+    if(dimKey) DimModel.record(word, dimKey, false, testedDims);
   },
 
   updateLadder(word, level, correct){
@@ -838,8 +858,16 @@ const WordModel = {
     word.srs.lastPracticed = Utils.todayISO();
   },
 
+  // Phase 5 micro-fix: easeStreak only advances via the legacy scheduler (WordModel.applyRating),
+  // so a word learned mostly through the FSRS tracks (recognition/meaningRecall/production) could
+  // never fade its mnemonic. Also fade once any FSRS-tracked dimension reaches the same stability
+  // bar already used elsewhere as "well-learned" (PRODUCTION_UNLOCK_STABILITY) -- display-timing
+  // only, no scheduling effect.
   mnemonicFaded(word){
-    return (word.srs.easeStreak||0) >= 4 && !!word.mnemonic;
+    if(!word.mnemonic) return false;
+    if((word.srs.easeStreak||0) >= 4) return true;
+    const fsrs = word.fsrs || {};
+    return FSRSScheduler.DIMENSIONS.some(dim => fsrs[dim] && fsrs[dim].stability >= FSRSScheduler.PRODUCTION_UNLOCK_STABILITY);
   },
 
   computeMastery(word){
@@ -2179,7 +2207,7 @@ const Views = {
       });
       contBtn.addEventListener('click', ()=>{
         WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat });
-        WordModel.logError(word, chosenCat, question.level);
+        WordModel.logError(word, chosenCat, question.level, QUESTION_TYPE_TO_DIMS[question.type]);
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, 'again');
         } else {
