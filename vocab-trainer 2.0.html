@@ -1361,6 +1361,7 @@ const ErrorIntegration = {
     // same `reviews` bucket it would otherwise land in, on the caller's behalf.
     DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
     Achievements.evaluate(Analytics.buildAchievementContext());
+    App.updateDueBadge(); // word.srs.nextReview was just moved to today, above
   },
   /* Records a confirmed-correct production-context usage (exam "used correctly"). */
   recordProductionSuccess(word, source){
@@ -1373,6 +1374,7 @@ const ErrorIntegration = {
     WordModel.checkFirstMastery(word);
     DailyActivity.bump(Utils.todayISO(), { reviews: 1, correct: 1 });
     Achievements.evaluate(Analytics.buildAchievementContext());
+    App.updateDueBadge();
   }
 };
 
@@ -1461,11 +1463,17 @@ const Practice = {
     }
     const word = item.word;
     const level = item.level;
-    if(item.drillType) return this.generateDrill(item);
-    if(level<=1) return this.genRecognition(word);
-    if(level===2) return this.genCuedRecall(word);
-    if(level===3) return this.genCloze(word);
-    return this.genProduction(word);
+    const q = item.drillType ? this.generateDrill(item) :
+      level<=1 ? this.genRecognition(word) :
+      level===2 ? this.genCuedRecall(word) :
+      level===3 ? this.genCloze(word) :
+      this.genProduction(word);
+    // Explicit, not left to callers' || 'legacy' fallbacks (Views.handleGraded/offerHint
+    // already have one, but a future call site that reads q.track directly and forgets it
+    // would silently mislabel attempts[].track) -- every question this generates outside the
+    // fsrs branch above is legacy-track by construction.
+    q.track = 'legacy';
+    return q;
   },
 
   // Grades one FSRS-scheduled dimension for a word. Updates only word.fsrs[dimension] --
@@ -1722,6 +1730,18 @@ const App = {
     document.getElementById('app').addEventListener('click', (e)=>{
       const btn = e.target.closest('.speak-btn');
       if(btn) Speech.speak(btn.dataset.word);
+    });
+    // Force-flush the exam's debounced persist() on the two moments a page can disappear
+    // without warning -- a backgrounded/closed tab (visibilitychange) and an actual unload
+    // (beforeunload) -- so a running exam never loses more than the last keystroke instead of
+    // up to persist()'s 500ms debounce window. Only relevant while running (that's the only
+    // status persist() debounces at meaningfully-frequent input); other statuses have already
+    // been flushed synchronously at their own transitions.
+    document.addEventListener('visibilitychange', ()=>{
+      if(document.visibilityState==='hidden' && Exam.status==='running') Exam._flushPersist();
+    });
+    window.addEventListener('beforeunload', ()=>{
+      if(Exam.status==='running') Exam._flushPersist();
     });
     this.showTab(Practice.session ? 'practice' : 'dashboard');
   },
@@ -2142,7 +2162,12 @@ const Views = {
     if(!contrast) errors.push('Contrast is required.');
     if(contexts.length<2) errors.push('At least 2 typical contexts are required.');
     if(!production) errors.push('A production sentence is required.');
-    if(!existing && word && Storage.state.words.some(w2=>Utils.normalize(w2.word)===Utils.normalize(word))){
+    // Excludes existing's own id so editing a word without changing its spelling doesn't
+    // flag itself as a duplicate of itself -- but still runs when editing (not gated on
+    // !existing), so renaming word B to word A's spelling is caught the same way manual add
+    // and Paste import already reject it. Edit was the only remaining path that skipped this
+    // check entirely.
+    if(word && Storage.state.words.some(w2=>w2!==existing && Utils.normalize(w2.word)===Utils.normalize(word))){
       errors.push('This word already exists in your bank.');
     }
 
@@ -2153,8 +2178,7 @@ const Views = {
     }
     errEl.innerHTML = '';
 
-    let finalCloze = cloze.filter(Boolean);
-    if(finalCloze.length===0 && production) finalCloze = [];
+    const finalCloze = cloze.filter(Boolean);
 
     if(existing){
       Object.assign(existing, { word, meaning, form: formField, grammar, collocations, contrast, contexts, production, mnemonic, pronunciation, cloze: finalCloze, wordType });
@@ -2232,7 +2256,11 @@ const Views = {
         const opening = panel.classList.contains('hidden');
         if(opening){
           const sentences = (w.cloze||[]).concat(w.production ? [w.production] : []).filter(Boolean);
-          const wb = new RegExp('\\b'+Utils.escapeRegex(w.word)+'\\b','ig');
+          // Matched against the escaped form of the word, not the raw word -- the sentence
+          // itself is escaped below before this regex runs against it, so a word containing
+          // ', &, <, or " (e.g. "don't") never matched its own escaped spelling and never
+          // highlighted in its own examples.
+          const wb = new RegExp('\\b'+Utils.escapeRegex(Utils.escapeHtml(w.word))+'\\b','ig');
           panel.innerHTML = sentences.length ?
             '<ul class="teach-list">' + sentences.map(s=>'<li>'+Utils.escapeHtml(s).replace(wb, m=>'<b>'+m+'</b>')+'</li>').join('') + '</ul>' :
             '<div class="meta">No example sentences saved yet — edit this word to add some.</div>';
@@ -2493,8 +2521,18 @@ const Views = {
     if(s.reviewing){ this.renderPracticeReviewCard(); return; }
 
     const item = s.queue[s.idx];
-    const q = Practice.generateQuestion(item);
-    s.currentQuestion = q; s.hintUsed = false;
+    // Cached on the queue item so Back -> Return to current card re-renders the exact same
+    // card instead of regenerating it: several question generators are randomized (option
+    // order, which cloze sentence, which hint ladder position), so a fresh call here used to
+    // hand the user a different variant, silently advance lastClozeIndex's rotation, discard
+    // whatever they'd typed so far, and reset hintUsed -- letting a second hint be offered on
+    // an item that had already used one. Not persisted through a refresh: Practice.persist's
+    // queue serialization whitelists fields and drops this one by design, and the bug this
+    // fixes is in-session navigation, not surviving a reload.
+    if(!item._cardState) item._cardState = { question: Practice.generateQuestion(item), hintUsed:false, typedVal:'' };
+    const cs = item._cardState;
+    const q = cs.question;
+    s.currentQuestion = q; s.hintUsed = cs.hintUsed;
     const canGoBack = Practice.canGoBack();
 
     el.innerHTML =
@@ -2529,28 +2567,38 @@ const Views = {
         });
       });
     } else if(q.autoGrade){
-      answerArea.innerHTML = '<div class="answer-input"><input type="text" id="answerInput" autocomplete="off" spellcheck="false" placeholder="Type your answer…">' +
-        '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn">Check</button></div></div>';
-      const input = answerArea.querySelector('#answerInput');
-      input.focus();
-      const submit = ()=>{
-        const val = input.value.trim();
-        if(!val) return;
-        input.disabled = true; answerArea.querySelector('#submitBtn').disabled = true;
-        const correct = Practice.grade(q, val);
-        if(!correct && !s.hintUsed){
-          this.offerHint(q, val, answerArea);
-        } else {
-          this.handleGraded(q, correct, val);
-        }
-      };
-      answerArea.querySelector('#submitBtn').addEventListener('click', submit);
-      input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submit(); });
+      // A cached hintUsed means the second (post-hint) input is the one to restore, not the
+      // first -- rendering the plain input here would silently let a second hint be offered
+      // on an item that already used one.
+      if(cs.hintUsed){
+        this._renderHintUI(q, answerArea, cs.typedVal);
+      } else {
+        answerArea.innerHTML = '<div class="answer-input"><input type="text" id="answerInput" autocomplete="off" spellcheck="false" placeholder="Type your answer…" value="'+Utils.escapeHtml(cs.typedVal||'')+'">' +
+          '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn">Check</button></div></div>';
+        const input = answerArea.querySelector('#answerInput');
+        input.focus();
+        input.addEventListener('input', ()=>{ cs.typedVal = input.value; });
+        const submit = ()=>{
+          const val = input.value.trim();
+          if(!val) return;
+          input.disabled = true; answerArea.querySelector('#submitBtn').disabled = true;
+          const correct = Practice.grade(q, val);
+          if(!correct && !s.hintUsed){
+            this.offerHint(q, val, answerArea);
+          } else {
+            this.handleGraded(q, correct, val);
+          }
+        };
+        answerArea.querySelector('#submitBtn').addEventListener('click', submit);
+        input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') submit(); });
+      }
     } else {
-      answerArea.innerHTML = '<div class="answer-input"><textarea id="answerInput" rows="3" placeholder="Write your sentence…"></textarea>' +
+      answerArea.innerHTML = '<div class="answer-input"><textarea id="answerInput" rows="3" placeholder="Write your sentence…">'+Utils.escapeHtml(cs.typedVal||'')+'</textarea>' +
         '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn">Reveal Self-Check</button></div></div>';
+      const ta = answerArea.querySelector('#answerInput');
+      ta.addEventListener('input', ()=>{ cs.typedVal = ta.value; });
       answerArea.querySelector('#submitBtn').addEventListener('click', ()=>{
-        const val = answerArea.querySelector('#answerInput').value.trim();
+        const val = ta.value.trim();
         this.showSelfCheck(q, val, answerArea);
       });
     }
@@ -2639,6 +2687,8 @@ const Views = {
   offerHint(q, wrongVal, answerArea){
     const s = Practice.session;
     s.hintUsed = true;
+    const item = s.queue[s.idx];
+    if(item._cardState){ item._cardState.hintUsed = true; item._cardState.typedVal = ''; }
     // Measurement fix: the first wrong submission used to be silently discarded -- only the
     // post-hint resubmission ever reached handleGraded/logAttempt, so a hinted item that got
     // corrected on try 2 logged only a single {correct:true}, biasing accuracy upward on every
@@ -2650,14 +2700,28 @@ const Views = {
     // number of hints given, since this first wrong answer landed in history/attempts[] above
     // but nowhere else.
     DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
+    // Rendering-only from here -- extracted into _renderHintUI so renderPracticeCard can
+    // redraw this same UI on a Back -> Return to current card round trip (with the
+    // in-progress second attempt restored) without re-running the log/bump above, which must
+    // fire exactly once per real wrong answer.
+    this._renderHintUI(q, answerArea, '');
+  },
+
+  // Pure render + wire, no logging -- called both by offerHint (a fresh hint, prefillVal
+  // always '') and by renderPracticeCard when redrawing a card whose item._cardState.hintUsed
+  // is already true (prefillVal is that item's cached in-progress second attempt).
+  _renderHintUI(q, answerArea, prefillVal){
     const answer = q.correctAnswer;
     const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
     answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
       '<div class="answer-input"><div style="font-family:var(--mono);font-size:20px;letter-spacing:3px;margin-bottom:10px;">'+Utils.escapeHtml(hint)+'</div>' +
-      '<input type="text" id="answerInput2" autocomplete="off" spellcheck="false" placeholder="Type your answer…">' +
+      '<input type="text" id="answerInput2" autocomplete="off" spellcheck="false" placeholder="Type your answer…" value="'+Utils.escapeHtml(prefillVal||'')+'">' +
       '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="submitBtn2">Check</button></div></div>';
     const input = answerArea.querySelector('#answerInput2');
     input.focus();
+    const s = Practice.session;
+    const item = s.queue[s.idx];
+    input.addEventListener('input', ()=>{ if(item._cardState) item._cardState.typedVal = input.value; });
     const submit = ()=>{
       const val = input.value.trim();
       if(!val) return;
@@ -2749,6 +2813,7 @@ const Views = {
         }
         DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
         Achievements.evaluate(Analytics.buildAchievementContext());
+        App.updateDueBadge();
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:false, category: chosenCat });
         s.idx++;
@@ -2772,6 +2837,7 @@ const Views = {
         WordModel.checkFirstMastery(word);
         DailyActivity.bump(Utils.todayISO(), { reviews: 1, correct: 1 });
         Achievements.evaluate(Analytics.buildAchievementContext());
+        App.updateDueBadge();
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:true, rating });
         s.idx++;
@@ -2970,6 +3036,7 @@ const Exam = {
   lastRecord: null,
   container: null,
   _tickCount: 0, // throttles tick()'s persist() to every 5th second -- see tick()
+  _persistTimer: null, // pending debounced flush, if any -- see persist()/_cancelPendingPersist()
 
   render(container){
     this.container = container;
@@ -2991,12 +3058,24 @@ const Exam = {
     }
   },
 
-  // Writes the resumable subset of exam state to Storage.state.examSession. Deliberately
-  // clears instead of writing when status is 'done': drawDone's render depends on
-  // this.lastRecord (the finished {targetWords, outcome, category} summary), which isn't
+  // Debounced entry point for incremental edits (a textarea keystroke, a prompt keystroke) --
+  // coalesces rapid-fire calls into one flush 500ms after the last one, instead of one
+  // Storage.save() (which rewrites the whole state -- attempts[] alone can carry up to 15,000
+  // entries) per character. State transitions need to be durable immediately, not up to 500ms
+  // later, so they call _flushPersist() directly instead of going through this debounce.
+  persist(){
+    this._cancelPendingPersist();
+    this._persistTimer = setTimeout(()=>{ this._persistTimer = null; this._flushPersist(); }, 500);
+  },
+  _cancelPendingPersist(){
+    if(this._persistTimer){ clearTimeout(this._persistTimer); this._persistTimer = null; }
+  },
+  // Writes the resumable subset of exam state to Storage.state.examSession right now.
+  // Deliberately clears instead of writing when status is 'done': drawDone's render depends
+  // on this.lastRecord (the finished {targetWords, outcome, category} summary), which isn't
   // part of this schema -- the exam is already logged to examLog by this point, so there's
   // nothing left to resume.
-  persist(){
+  _flushPersist(){
     if(this.status==='done'){ this.clearPersisted(); return; }
     Storage.state.examSession = {
       status: this.status, prompt: this.prompt, minutes: this.minutes, text: this.text,
@@ -3011,6 +3090,7 @@ const Exam = {
     Storage.save();
   },
   clearPersisted(){
+    this._cancelPendingPersist();
     if(Storage.state.examSession){ Storage.state.examSession = null; Storage.save(); }
   },
   // Resets Exam's in-memory state, independent of the persisted examSession -- used by
@@ -3018,6 +3098,7 @@ const Exam = {
   // this.targetWords holds live word object references from the state that's about to be
   // discarded (same concern Practice.session has, see importJSON's comment).
   discard(){
+    this._cancelPendingPersist();
     if(this.timerHandle){ clearInterval(this.timerHandle); this.timerHandle=null; }
     this.status='config'; this.prompt=''; this.text=''; this.remainingSec=0;
     this.targetWords=[]; this.checklist={}; this.lastRecord=null;
@@ -3119,7 +3200,7 @@ const Exam = {
     this.targetWords.forEach(w=>{ this.checklist[w.id] = { outcome:null, category:null }; });
     this.drawRunning();
     this.timerHandle = setInterval(()=>this.tick(), 1000);
-    this.persist();
+    this._flushPersist(); // state transition -- durable immediately, not up to 500ms later
   },
 
   tick(){
@@ -3130,10 +3211,12 @@ const Exam = {
       display.classList.toggle('low', this.remainingSec<=60);
     }
     // Every 5th second, not every one -- Storage.save() rewrites the whole state, and
-    // attempts[] alone can carry up to 15,000 entries. finishWriting()'s own persist() (via
-    // the 'review' transition below) still catches the exact remainingSec<=0 moment.
+    // attempts[] alone can carry up to 15,000 entries. Already throttled at this call site,
+    // so this flushes immediately rather than going through persist()'s own 500ms debounce
+    // on top. finishWriting()'s own _flushPersist() (via the 'review' transition below)
+    // still catches the exact remainingSec<=0 moment.
     this._tickCount++;
-    if(this._tickCount%5===0) this.persist();
+    if(this._tickCount%5===0) this._flushPersist();
     if(this.remainingSec<=0){
       clearInterval(this.timerHandle); this.timerHandle=null;
       this.finishWriting();
@@ -3168,7 +3251,7 @@ const Exam = {
 
   finishWriting(){
     this.status='review';
-    this.persist();
+    this._flushPersist(); // state transition -- durable immediately
     this.render(this.container);
   },
 
@@ -3247,10 +3330,13 @@ const Exam = {
     });
     Storage.state.examLog.push(record);
     this.status='done';
-    // Clears examSession rather than persisting it -- status is now 'done', and persist()
-    // already redirects a 'done' status here anyway (see its comment). Set directly (not via
-    // clearPersisted(), which has its own conditional save) so this one Storage.save() below
-    // covers both the examLog push and the cleared examSession together.
+    // Clears examSession rather than persisting it -- status is now 'done', and _flushPersist()
+    // already redirects a 'done' status here anyway (see its comment). Cancels any pending
+    // debounced persist() first, so a stale timer from an in-progress edit can't fire after
+    // this and resurrect an examSession for a session that's already logged to examLog. Set
+    // directly (not via clearPersisted(), which has its own conditional save) so this one
+    // Storage.save() below covers both the examLog push and the cleared examSession together.
+    this._cancelPendingPersist();
     Storage.state.examSession = null;
     Storage.save();
     this.lastRecord = record;
@@ -3926,7 +4012,7 @@ const Analytics = {
       '<p class="field-hint">Both regimes run concurrently per word from the moment teaching completes — there is no word-level arm flip, and per-word metrics below exclude words with no tracked attempts in either arm.</p>' +
       headline + rtsBreakdown +
       '<div class="achv-stats-grid" style="margin-top:10px;">' +
-      '<div class="stat"><div class="num">'+(cmp.legacy.n>0 ? cmp.legacy.meanInterval.toFixed(1)+'d' : '—')+'</div><div class="label">Legacy Mean Interval ('+cmp.legacy.n+' word'+(cmp.legacy.n===1?'':'s')+')</div></div>' +
+      '<div class="stat"><div class="num">'+(cmp.legacy.n>0 ? cmp.legacy.meanInterval.toFixed(1)+'d' : '—')+'</div><div class="label">Interval at Last Legacy Grade ('+cmp.legacy.n+' word'+(cmp.legacy.n===1?'':'s')+')</div></div>' +
       '<div class="stat"><div class="num">'+(cmp.fsrs.n>0 ? cmp.fsrs.meanInterval.toFixed(1)+'d' : '—')+'</div><div class="label">FSRS Mean Interval ('+cmp.fsrs.n+' word'+(cmp.fsrs.n===1?'':'s')+')</div></div>' +
       '</div>' +
       '<p class="field-hint">Legacy intervals are capped at 30 days (WordModel.applyRating); FSRS intervals are uncapped. This is a scheduling design difference, not a finding — read the two numbers as different units, not a race.</p>' +
@@ -4361,6 +4447,24 @@ const Session = {
     this.renderPhase();
   },
 
+  // Same confirm-before-overwrite guard as Views.runFreePractice/runProductionDrills/
+  // runDimensionPractice -- renderPhase's three #beginBtn handlers used to assign
+  // Practice.session unconditionally, bypassing those guards. Phase 1 is the reachable case
+  // (a free-practice session left in progress, then Dashboard -> Start Daily Session ->
+  // Begin); Phases 2/3 can only be reached after the prior phase already cleared
+  // Practice.session on its own way in, so guarding them too is defense-in-depth rather than
+  // a live bug. Confirm wraps the whole mutation, same as the run* guards: cancelling leaves
+  // both the live Practice.session and Session's own state untouched.
+  _beginQueue(queue){
+    const proceed = ()=>{
+      Practice.session = { queue, idx:0, results:[], mode:'session' };
+      Practice.persist();
+      Views.renderPracticeCard();
+    };
+    if(Practice.session) Modal.confirm('You have a practice session in progress. Start this one instead and lose your progress on the current one?', proceed);
+    else proceed();
+  },
+
   renderPhase(){
     const el = document.getElementById('view-practice');
     const nav = '<div class="session-phase-nav">' + this.phases.map((p,i)=>
@@ -4375,11 +4479,7 @@ const Session = {
         '<button class="btn ghost" id="skipBtn">'+(queue.length?'Skip Phase':'Nothing due — Continue')+'</button></div></div></div>';
       el.querySelector('#skipBtn').addEventListener('click', ()=>this.nextPhase());
       const b = el.querySelector('#beginBtn');
-      if(b) b.addEventListener('click', ()=>{
-        Practice.session = { queue, idx:0, results:[], mode:'session' };
-        Practice.persist();
-        Views.renderPracticeCard();
-      });
+      if(b) b.addEventListener('click', ()=>this._beginQueue(queue));
     } else if(this.phase===1){
       el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 2 · New Vocabulary</h2>' +
         '<p class="field-hint">Add as many (or as few) new words as feels right — there\'s no fixed quota. Build a full Production Record for each.</p>' +
@@ -4403,15 +4503,14 @@ const Session = {
         '<button class="btn ghost" id="skipBtn">'+(queue.length?'Skip Phase':'Continue')+'</button></div></div></div>';
       el.querySelector('#skipBtn').addEventListener('click', ()=>this.nextPhase());
       const b = el.querySelector('#beginBtn');
-      if(b) b.addEventListener('click', ()=>{
-        Practice.session = { queue, idx:0, results:[], mode:'session' };
-        Practice.persist();
-        Views.renderPracticeCard();
-      });
+      if(b) b.addEventListener('click', ()=>this._beginQueue(queue));
     } else if(this.phase===3){
       const queue = Storage.state.words.filter(w=>{
         const today = Utils.todayISO();
-        const erroredToday = Object.keys(w.errorCounts||{}).length>0 && Storage.state.errorLog.some(e=>e.wordId===w.id && e.date===today);
+        // errorCounts[category]>0 is implied by having a matching errorLog entry at all
+        // (WordModel.logError increments both together), so checking it separately here was
+        // redundant.
+        const erroredToday = Storage.state.errorLog.some(e=>e.wordId===w.id && e.date===today);
         if(!erroredToday) return false;
         const last = w.history[w.history.length-1];
         const resolvedSinceError = last && last.date===today && last.correct;
@@ -4424,11 +4523,7 @@ const Session = {
         '<button class="btn ghost" id="finishBtn">'+(queue.length?'Skip & Finish':'Finish Session')+'</button></div></div></div>';
       el.querySelector('#finishBtn').addEventListener('click', ()=>this.finish());
       const b = el.querySelector('#beginBtn');
-      if(b) b.addEventListener('click', ()=>{
-        Practice.session = { queue, idx:0, results:[], mode:'session' };
-        Practice.persist();
-        Views.renderPracticeCard();
-      });
+      if(b) b.addEventListener('click', ()=>this._beginQueue(queue));
     }
   },
 
@@ -4557,6 +4652,7 @@ const Teaching = {
     // teaching today" -- a different, incompatible unit -- and silently mix the two
     // definitions in the same field. Left unwired going forward; see the Phase C report.
     Achievements.evaluate(Analytics.buildAchievementContext());
+    App.updateDueBadge(); // word.srs.nextReview was just moved to today, above
     Storage.save();
     Utils.toast('"'+word.word+'" is ready for retrieval practice.');
     this.state = null;
@@ -4629,7 +4725,9 @@ const Teaching = {
     const contexts = word.contexts.map(c=>'<li>'+Utils.escapeHtml(c)+'</li>').join('');
     const colloc = word.collocations.length ? '<div class="teach-box"><h4>Collocations</h4><div>'+word.collocations.map(c=>'<span class="badge" style="margin:2px;">'+Utils.escapeHtml(c)+'</span>').join(' ')+'</div></div>' : '';
     const sentences = (word.cloze||[]).concat(word.production ? [word.production] : []).filter(Boolean);
-    const wb = new RegExp('\\b'+Utils.escapeRegex(word.word)+'\\b','ig');
+    // See renderBank's identical fix: matched against the escaped form of the word, since
+    // the sentence is escaped below before this regex runs against it.
+    const wb = new RegExp('\\b'+Utils.escapeRegex(Utils.escapeHtml(word.word))+'\\b','ig');
     const examples = sentences.length ? '<div class="teach-box"><h4>Example Sentences</h4><ul class="teach-list">' +
       sentences.map(s=>'<li>'+Utils.escapeHtml(s).replace(wb, m=>'<b>'+m+'</b>')+'</li>').join('') + '</ul></div>' : '';
     return '<div class="teach-step-label">Step 3 · Contextual Examples</div>' +
