@@ -664,6 +664,16 @@ const BulkImport = {
 const STORAGE_KEY = 'coreVocabTrainer.v1';
 const STORAGE_BACKUP_KEY = 'coreVocabTrainer.v1.corrupted_backup';
 const FSRS_REVIEW_LOG_CAP = 5000;
+// Concatenate-with-cap ceiling for importJSON's merge mode on sessionLog/writingLog/examLog --
+// these have no cap in normal live-write operation (one push per session, naturally low
+// volume), but a merge import concatenates two full histories and could otherwise grow
+// unbounded across repeated merges. Same order of magnitude as FSRS_REVIEW_LOG_CAP.
+const MERGE_LOG_CAP = 5000;
+// attempts[] (Phase F groundwork) receives every graded attempt across every track and
+// phase (practice, teaching, writing, exam) -- unlike fsrsReviewLog, which only receives
+// FSRS-scheduled reviews -- so it fills much faster and gets its own, larger cap rather
+// than reusing FSRS_REVIEW_LOG_CAP.
+const ATTEMPTS_LOG_CAP = 15000;
 
 function defaultState(){
   return {
@@ -680,6 +690,12 @@ function defaultState(){
     // Per-review measurement log for FSRS-scheduled dimensions (Phase 5 groundwork). Separate from
     // word.history so analytics doesn't need to filter mixed-type entries. Capped, see Storage.save.
     fsrsReviewLog: [], // {ts, wordId, dimension, rating, predictedR, outcome, desiredRetentionAtSchedule, stabilityBefore, stabilityAfter, difficultyBefore, difficultyAfter, elapsedDays, scheduledDays}
+    // Attempt-log schema groundwork (Phase F) for F+1's arm-tagged comparison view -- a flat,
+    // cross-track record of every graded attempt (practice/teaching/writing/exam), normalized
+    // enough to compare across arms. Written alongside word.history (see WordModel.logAttempt),
+    // not a replacement for it -- nothing reads this yet. {ts, wordId, level, correct, phase,
+    // track, hinted, errorCategory}
+    attempts: [],
     practiceSession: null, // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
     // Phase C groundwork for Phase D analytics -- infrastructure only, nothing reads these yet.
     dailyActivity: {}, // { 'YYYY-MM-DD': {reviews, correct, teaching, newWords} } -- see DailyActivity.bump / Storage.backfillDailyActivity
@@ -709,6 +725,7 @@ function validateAndRepair(raw){
   if(Array.isArray(raw.writingLog)) out.writingLog = raw.writingLog.filter(s=>s && s.ts);
   if(Array.isArray(raw.examLog)) out.examLog = raw.examLog.filter(s=>s && s.ts);
   if(Array.isArray(raw.fsrsReviewLog)) out.fsrsReviewLog = raw.fsrsReviewLog.filter(s=>s && s.ts).slice(-FSRS_REVIEW_LOG_CAP);
+  if(Array.isArray(raw.attempts)) out.attempts = raw.attempts.filter(s=>s && s.ts).slice(-ATTEMPTS_LOG_CAP);
   if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
     out.practiceSession = raw.practiceSession;
   }
@@ -856,6 +873,35 @@ const Storage = {
       this.state.words = merged;
       this.state.errorLog = this.state.errorLog.concat(incoming.errorLog);
       if(incoming.settings.examDate) this.state.settings.examDate = incoming.settings.examDate;
+
+      this.state.sessionLog = this.state.sessionLog.concat(incoming.sessionLog).slice(-MERGE_LOG_CAP);
+      this.state.writingLog = this.state.writingLog.concat(incoming.writingLog).slice(-MERGE_LOG_CAP);
+      this.state.examLog = this.state.examLog.concat(incoming.examLog).slice(-MERGE_LOG_CAP);
+      this.state.fsrsReviewLog = this.state.fsrsReviewLog.concat(incoming.fsrsReviewLog).slice(-FSRS_REVIEW_LOG_CAP);
+      this.state.attempts = this.state.attempts.concat(incoming.attempts).slice(-ATTEMPTS_LOG_CAP);
+
+      // Union-by-key: an achievement already unlocked locally keeps its (earlier or equal)
+      // unlockedAt rather than being overwritten by the incoming save's timestamp.
+      Object.keys(incoming.achievements).forEach(id=>{
+        const inc = incoming.achievements[id];
+        const cur = this.state.achievements[id];
+        if(!cur){ this.state.achievements[id] = inc; return; }
+        if(inc.unlockedAt!=null && (cur.unlockedAt==null || inc.unlockedAt<cur.unlockedAt)){
+          cur.unlockedAt = inc.unlockedAt;
+        }
+      });
+
+      // Append-with-dedupe on (type, wordId, ts) -- two merges of overlapping backups
+      // shouldn't double-append the same milestone.
+      const milestoneKey = m => m.type+'|'+(m.wordId||'')+'|'+m.ts;
+      const existingMilestoneKeys = new Set(this.state.milestones.map(milestoneKey));
+      incoming.milestones.forEach(m=>{
+        const key = milestoneKey(m);
+        if(!existingMilestoneKeys.has(key)){ existingMilestoneKeys.add(key); this.state.milestones.push(m); }
+      });
+
+      // No local in-progress session to lose -- adopt the incoming one rather than dropping it.
+      if(!this.state.practiceSession && incoming.practiceSession) this.state.practiceSession = incoming.practiceSession;
     }
     this.save();
     return true;
@@ -1014,7 +1060,13 @@ const WordModel = {
   },
 
   logAttempt(word, level, correct, meta){
-    const entry = Object.assign({ ts: Date.now(), date: Utils.todayISO(), level, correct }, meta||{});
+    meta = meta || {};
+    // attemptsPhase/track are attempts[]-only overrides (see below) -- stripped out so they
+    // never leak into the history entry, which keeps its existing shape unchanged. ts is
+    // pulled out too so it's set exactly once instead of via two separate defaultings.
+    const { ts: metaTs, attemptsPhase, track, ...histMeta } = meta;
+    const ts = typeof metaTs==='number' ? metaTs : Date.now();
+    const entry = Object.assign({ ts, date: Utils.todayISO(), level, correct }, histMeta);
     word.history.push(entry);
     if(word.history.length>200) word.history = word.history.slice(-200);
     // Phase D closeout: `teaching` is "teaching-step attempts" (matches how the backfill
@@ -1024,6 +1076,23 @@ const WordModel = {
     // sites (Practice.handleGraded, ErrorIntegration) instead of here, since those already
     // do it post-grade with the rating in hand -- bumping them here too would double-count.
     if(entry.phase==='teaching') DailyActivity.bump(entry.date, { teaching: 1 });
+
+    // Phase F: attempts[] mirrors history but normalized for cross-track comparison. level is
+    // nulled for teaching (history keeps level:0 -- deliberate asymmetry, there's no real
+    // "level" during teaching, 0 is just a placeholder history has always used). phase can be
+    // overridden via meta.attemptsPhase without touching history's own phase field (used by
+    // ErrorIntegration to collapse writing-audit sources into 'writing'/'timed-exam'). track
+    // defaults to null for callers that don't pass one (teaching has no track concept).
+    Storage.state.attempts.push({
+      ts, wordId: word.id,
+      level: entry.phase==='teaching' ? null : level,
+      correct,
+      phase: attemptsPhase!==undefined ? attemptsPhase : (entry.phase || null),
+      track: track!==undefined ? track : null,
+      hinted: !!entry.hinted,
+      errorCategory: entry.errorCategory || null
+    });
+    if(Storage.state.attempts.length>ATTEMPTS_LOG_CAP) Storage.state.attempts = Storage.state.attempts.slice(-ATTEMPTS_LOG_CAP);
   },
 
   logError(word, category, level, testedDims){
@@ -1034,7 +1103,7 @@ const WordModel = {
   },
 
   updateLadder(word, level, correct){
-    const last5 = word.history.slice(-5);
+    const last5 = word.history.filter(h=>h.phase!=='teaching').slice(-5);
     const rate = last5.length ? last5.filter(h=>h.correct).length/last5.length : 1;
     if(last5.length>=3 && rate<0.5){
       word.levelState.level = Math.max(2, word.levelState.level-1);
@@ -1141,7 +1210,7 @@ const WordModel = {
 
   isOverdue(word){ return word.history.length>0 && word.srs.nextReview < Utils.todayISO(); },
   isDueToday(word){ return word.history.length>0 && word.srs.nextReview === Utils.todayISO(); },
-  isNew(word){ return word.history.length===0; },
+  hasRetrievalHistory(word){ return word.history.some(h=>h.phase!=='teaching'); },
 
   findByText(text){
     const norm = Utils.normalize(text);
@@ -1162,8 +1231,12 @@ const WordModel = {
     // ErrorIntegration.recordProductionError after a production error would silently drop
     // out of the Retention Gaps lapse-rate denominator (matured), even though "achieved,
     // then reset by a real error" is exactly the lapse this metric exists to surface.
-    const everAchievedAt = word.dims[dimKey].everAchievedAt || null;
-    word.dims[dimKey] = { status:'Not assessed', success:0, fail:0, everAchievedAt };
+    // success/fail are preserved for the same reason -- they're displayed as lifetime
+    // tallies (the coverage table's Fails column, and hasFailures gating the Practice
+    // button), not a mirror of current status, so zeroing them here would silently change
+    // what those displayed numbers mean.
+    const { everAchievedAt, success, fail } = word.dims[dimKey];
+    word.dims[dimKey] = { status:'Not assessed', success: success||0, fail: fail||0, everAchievedAt: everAchievedAt||null };
   }
 };
 
@@ -1178,7 +1251,11 @@ const ErrorIntegration = {
      it into today's due queue. */
   recordProductionError(word, category, source){
     WordModel.logError(word, category, 4);
-    WordModel.logAttempt(word, 4, false, { phase: source||'writing', errorCategory: category });
+    // attempts[]-only normalization: history keeps whatever source string the caller passed
+    // (e.g. 'audit-review'), but attempts[] collapses every non-exam source into 'writing' and
+    // is explicitly track:null -- this track never runs through a practice track ('legacy'/'fsrs').
+    WordModel.logAttempt(word, 4, false, { phase: source||'writing', errorCategory: category,
+      attemptsPhase: source==='timed-exam' ? 'timed-exam' : 'writing', track: null });
     WordModel.resetDim(word, 'independentProduction');
     WordModel.resetDim(word, 'novelApplication');
     word.srs.interval = 1;
@@ -1192,7 +1269,8 @@ const ErrorIntegration = {
   },
   /* Records a confirmed-correct production-context usage (exam "used correctly"). */
   recordProductionSuccess(word, source){
-    WordModel.logAttempt(word, 4, true, { phase: source||'writing' });
+    WordModel.logAttempt(word, 4, true, { phase: source||'writing',
+      attemptsPhase: source==='timed-exam' ? 'timed-exam' : 'writing', track: null });
     WordModel.updateLadder(word, 4, true);
     WordModel.applyRating(word, 'easy');
     DimModel.record(word, 'independentProduction', true);
@@ -1225,7 +1303,7 @@ const Practice = {
     const dueToday = Utils.shuffle(pool.filter(w=>WordModel.isDueToday(w) && !overdue.includes(w) && !failedRecent.includes(w)));
     let queue = overdue.concat(failedRecent, dueToday);
     if(opts.includeNew){
-      const newWords = Utils.shuffle(pool.filter(w=>WordModel.isNew(w)));
+      const newWords = Utils.shuffle(pool.filter(w=>!WordModel.hasRetrievalHistory(w)));
       queue = queue.concat(newWords.slice(0, opts.newLimit==null?newWords.length:opts.newLimit));
     }
     // dedupe
@@ -1285,11 +1363,16 @@ const Practice = {
 
   // Grades one FSRS-scheduled dimension for a word. Updates only word.fsrs[dimension] --
   // never word.srs or word.levelState, which the legacy dimensions still own exclusively.
-  gradeFsrs(word, dimension, ratingKey){
+  // ts (optional): shared event timestamp threaded in from Views.handleGraded so this
+  // review's fsrsReviewLog entry lines up exactly with the same event's history/attempts[]
+  // entries (attempts[].ts === fsrsReviewLog[].ts for FSRS-track events). Defaults to
+  // Date.now() for any other caller that doesn't pass one.
+  gradeFsrs(word, dimension, ratingKey, ts){
+    ts = typeof ts==='number' ? ts : Date.now();
     const settings = Storage.state.settings.fsrs;
     const before = word.fsrs[dimension];
     const result = FSRSScheduler.grade(before, ratingKey, {
-      now: new Date(),
+      now: new Date(ts),
       desiredRetention: settings.desiredRetention,
       maxIntervalDays: settings.maxIntervalDays || undefined,
       params: settings.params || undefined
@@ -1300,7 +1383,7 @@ const Practice = {
     word.fsrs[dimension] = result.card;
 
     const logEntry = {
-      ts: Date.now(), wordId: word.id, dimension, rating: ratingKey,
+      ts, wordId: word.id, dimension, rating: ratingKey,
       predictedR: result.predictedR, outcome: ratingKey!=='again',
       desiredRetentionAtSchedule: settings.desiredRetention,
       stabilityBefore: before.stability, stabilityAfter: result.card.stability,
@@ -2041,7 +2124,8 @@ const Views = {
         examplesBtn.textContent = opening ? 'Hide examples' : 'Examples';
       });
       row.querySelector('.del-btn').addEventListener('click', ()=>{
-        Modal.confirm('Delete "'+row.querySelector('.w').textContent+'"? This cannot be undone.', ()=>{
+        const delWord = Storage.state.words.find(x=>x.id===id);
+        Modal.confirm('Delete "'+(delWord?delWord.word:'')+'"? This cannot be undone.', ()=>{
           Storage.state.words = Storage.state.words.filter(x=>x.id!==id);
           Storage.save();
           this.renderBank();
@@ -2387,6 +2471,12 @@ const Views = {
   offerHint(q, wrongVal, answerArea){
     const s = Practice.session;
     s.hintUsed = true;
+    // Measurement fix: the first wrong submission used to be silently discarded -- only the
+    // post-hint resubmission ever reached handleGraded/logAttempt, so a hinted item that got
+    // corrected on try 2 logged only a single {correct:true}, biasing accuracy upward on every
+    // hinted item. Log the failed first attempt through the same path as everything else so it
+    // lands in both history and attempts[] before the hint is shown.
+    WordModel.logAttempt(q.word, q.level, false, { hinted:false, track: q.track||'legacy' });
     const answer = q.correctAnswer;
     const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
     answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
@@ -2468,10 +2558,14 @@ const Views = {
         });
       });
       contBtn.addEventListener('click', ()=>{
-        WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat, hinted: !!s.hintUsed });
+        // Shared ts for this graded event -- threaded into logAttempt (history + attempts[])
+        // and gradeFsrs (FSRSScheduler.grade + the fsrsReviewLog entry) so all three line up.
+        const ts = Date.now();
+        WordModel.logAttempt(word, question.level, false, { ts, rating:'again', errorCategory: chosenCat, hinted: !!s.hintUsed, track: question.track||'legacy' });
         WordModel.logError(word, chosenCat, question.level, QUESTION_TYPE_TO_DIMS[question.type]);
+        this.recordDimForQuestion(question, false);
         if(question.track==='fsrs'){
-          Practice.gradeFsrs(word, question.dimension, 'again');
+          Practice.gradeFsrs(word, question.dimension, 'again', ts);
         } else {
           WordModel.updateLadder(word, question.level, false);
           WordModel.applyRating(word, 'again');
@@ -2486,9 +2580,10 @@ const Views = {
       });
     } else {
       const finish = (rating)=>{
-        WordModel.logAttempt(word, question.level, true, { rating, hinted: !!s.hintUsed });
+        const ts = Date.now();
+        WordModel.logAttempt(word, question.level, true, { ts, rating, hinted: !!s.hintUsed, track: question.track||'legacy' });
         if(question.track==='fsrs'){
-          Practice.gradeFsrs(word, question.dimension, rating);
+          Practice.gradeFsrs(word, question.dimension, rating, ts);
         } else {
           WordModel.updateLadder(word, question.level, true);
           WordModel.applyRating(word, rating);
@@ -3619,7 +3714,7 @@ const Analytics = {
 
   renderForecastChart(theme){
     const buckets = [1,3,7,14,30];
-    const taught = Storage.state.words.filter(w=>w.teaching && w.teaching.completed && !WordModel.isNew(w));
+    const taught = Storage.state.words.filter(w=>w.teaching && w.teaching.completed);
     const today = Utils.todayISO();
     const counts = buckets.map(n=>taught.filter(w=>Utils.diffDays(today, w.srs.nextReview)<=n).length);
     this.charts.forecast = new Chart(document.getElementById('chartForecast'), {
