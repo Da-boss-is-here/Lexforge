@@ -312,6 +312,40 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 .achv-progress{height:4px;border-radius:99px;background:var(--border);margin-top:7px;overflow:hidden;}
 .achv-progress-bar{height:100%;background:var(--accent);border-radius:99px;}
 .achv-progress-label{font-family:var(--mono);font-size:9.5px;color:var(--text-dim);margin-top:3px;}
+
+/* ---- Phase D: "This Week" ---- */
+.week-stat .delta{font-family:var(--mono);font-size:11.5px;font-weight:600;margin-top:4px;display:block;}
+.week-stat .delta.up{color:var(--good);}
+.week-stat .delta.down{color:var(--bad);}
+.week-stat .delta.flat{color:var(--text-dim);}
+.streak-row{display:flex;gap:10px;margin-top:10px;}
+.streak-tile{flex:1;background:var(--bg-elev-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;text-align:center;}
+.streak-tile .num{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:-0.02em;}
+.streak-tile .label{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);margin-top:3px;}
+
+/* ---- Phase D: consistency heatmap ---- */
+.heatmap-scroll{overflow-x:auto;padding-bottom:4px;}
+.heatmap-grid{display:grid;grid-template-rows:repeat(7,1fr);grid-auto-flow:column;gap:3px;width:max-content;}
+.heatmap-cell{width:12px;height:12px;border-radius:3px;background:var(--border);}
+.heatmap-cell.level-0{background:var(--bg-elev-2);}
+.heatmap-cell.level-1{background:var(--accent-wash);}
+.heatmap-cell.level-2{background:var(--accent);opacity:.55;}
+.heatmap-cell.level-3{background:var(--accent);}
+.heatmap-legend{display:flex;align-items:center;gap:5px;margin-top:10px;font-family:var(--mono);font-size:10.5px;color:var(--text-dim);}
+.heatmap-legend .heatmap-cell{width:10px;height:10px;}
+
+/* ---- Phase D: milestone wall ---- */
+.milestone-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);}
+.milestone-row:last-child{border-bottom:none;}
+.milestone-row .icon{font-size:17px;flex:0 0 auto;}
+.milestone-row .text{flex:1;font-size:13px;}
+.milestone-row .when{font-family:var(--mono);font-size:10.5px;color:var(--text-dim);flex:0 0 auto;}
+
+/* ---- Phase D: personal bests ---- */
+.pb-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);}
+.pb-row:last-child{border-bottom:none;}
+.pb-row .pb-label{font-size:13px;color:var(--text-dim);}
+.pb-row .pb-value{font-family:var(--serif);font-weight:650;font-size:14.5px;}
 .streak-banner{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:16px;font-weight:650;}
 .streak-banner .flame{font-size:24px;}
 
@@ -2904,9 +2938,131 @@ function computeFirstPostTeachingRetention(words){
   return { n, y, rate: y ? n/y : null };
 }
 
+/* ============================== PHASE D: "THIS WEEK" AGGREGATIONS (pure) ==============================
+   All read state.dailyActivity / state.words / state.milestones as-is -- no DOM, no Chart.js. */
+
+// Sums each of dailyActivity's four counters over [todayISO-endOffset, todayISO-startOffset]
+// (inclusive, offsets in days-before-today) and returns {reviews,correct,teaching,newWords}.
+function sumDailyActivityRange(dailyActivity, todayISO, startOffset, endOffset){
+  const totals = { reviews:0, correct:0, teaching:0, newWords:0 };
+  for(let i=startOffset; i<=endOffset; i++){
+    const bucket = (dailyActivity||{})[Utils.addDays(todayISO, -i)];
+    if(!bucket) continue;
+    totals.reviews += bucket.reviews||0;
+    totals.correct += bucket.correct||0;
+    totals.teaching += bucket.teaching||0;
+    totals.newWords += bucket.newWords||0;
+  }
+  return totals;
+}
+
+// This week (today..today-6) vs. the prior week (today-7..today-13). `deltas` is null when
+// the prior week had zero activity at all -- comparing against nothing would produce a
+// meaningless "+100%"/"up from 0" arrow, so the caller shows raw numbers with no arrow instead.
+function computeWeekOverWeek(dailyActivity, todayISO){
+  const accuracyOf = w => w.reviews ? Math.round(w.correct/w.reviews*100) : null;
+  const thisWeek = sumDailyActivityRange(dailyActivity, todayISO, 0, 6);
+  const priorWeek = sumDailyActivityRange(dailyActivity, todayISO, 7, 13);
+  thisWeek.accuracy = accuracyOf(thisWeek);
+  priorWeek.accuracy = accuracyOf(priorWeek);
+  const priorWeekEmpty = !(priorWeek.reviews || priorWeek.teaching || priorWeek.newWords);
+  const deltas = priorWeekEmpty ? null : {
+    reviews: thisWeek.reviews - priorWeek.reviews,
+    accuracy: (thisWeek.accuracy!==null && priorWeek.accuracy!==null) ? thisWeek.accuracy-priorWeek.accuracy : null,
+    newWords: thisWeek.newWords - priorWeek.newWords
+  };
+  return { thisWeek, priorWeek, priorWeekEmpty, deltas };
+}
+
+// Current streak (consecutive days with any activity, ending today or yesterday if today
+// hasn't happened yet) and longest-ever streak, both scanned directly from dailyActivity --
+// a broader, more complete source than Analytics.computeStreak (which reads sessionLog/
+// word.history/writingLog/examLog piecemeal). Kept as a separate function rather than
+// replacing computeStreak's internals: computeStreak is still what feeds achievement
+// unlock checks (buildAchievementContext), and swapping its data source would silently
+// change which day an achievement unlocks on -- a behavior change this phase doesn't ask
+// for. This function only feeds the new "This Week" display.
+function computeStreakFromActivity(dailyActivity, todayISO){
+  const dates = Object.keys(dailyActivity||{}).filter(d=>{
+    const b = dailyActivity[d];
+    return b && ((b.reviews||0)>0 || (b.teaching||0)>0 || (b.newWords||0)>0);
+  }).sort();
+  if(dates.length===0) return { current:0, longest:0 };
+  const dateSet = new Set(dates);
+  let current = 0;
+  let cursor = todayISO;
+  if(!dateSet.has(cursor)) cursor = Utils.addDays(cursor, -1);
+  while(dateSet.has(cursor)){ current++; cursor = Utils.addDays(cursor, -1); }
+  let longest = 0, run = 0, prev = null;
+  dates.forEach(d=>{
+    run = (prev && Utils.diffDays(prev, d)===1) ? run+1 : 1;
+    longest = Math.max(longest, run);
+    prev = d;
+  });
+  return { current, longest };
+}
+
+const HEATMAP_DAYS = 84;
+// Oldest-first array of {date, count, level} for the last `days` days (level 0-3 by
+// dailyActivity[date].reviews: 0 / 1-5 / 6-15 / 16+). Weekday alignment for the GitHub-style
+// grid layout is a rendering concern, done where this gets turned into HTML, not here.
+function computeHeatmapCells(dailyActivity, todayISO, days){
+  days = days || HEATMAP_DAYS;
+  const cells = [];
+  for(let i=days-1; i>=0; i--){
+    const date = Utils.addDays(todayISO, -i);
+    const reviews = ((dailyActivity||{})[date] && dailyActivity[date].reviews) || 0;
+    const level = reviews<=0 ? 0 : reviews<=5 ? 1 : reviews<=15 ? 2 : 3;
+    cells.push({ date, count: reviews, level });
+  }
+  return cells;
+}
+
+// The single day (if any) with the most reviews logged. Null when every day is zero --
+// caller hides the "highest single day" row rather than showing a dash.
+function computeHighestSingleDay(dailyActivity){
+  let best = null;
+  Object.keys(dailyActivity||{}).forEach(date=>{
+    const reviews = ((dailyActivity||{})[date] && dailyActivity[date].reviews) || 0;
+    if(reviews>0 && (!best || reviews>best.reviews)) best = { date, reviews };
+  });
+  return best;
+}
+
+// The word that reached Stable/Exam Ready fastest from its creation date (word.created ->
+// word.firstMasteryAt). Null when no word has firstMasteryAt yet -- caller hides the row.
+function computeFastestMastery(words){
+  let best = null;
+  (words||[]).forEach(w=>{
+    if(!w || typeof w.firstMasteryAt!=='number' || !w.created) return;
+    const createdMs = new Date(w.created+'T00:00:00.000Z').getTime();
+    const days = (w.firstMasteryAt - createdMs) / 86400000;
+    if(days<0) return; // guards against clock skew rather than showing a negative duration
+    if(!best || days<best.days) best = { wordId: w.id, word: w.word, days };
+  });
+  return best;
+}
+
+// "today" / "yesterday" / "N days/weeks/months/years ago" for the milestone wall.
+function relativeDate(ts, nowMs){
+  const days = Math.floor(((nowMs==null?Date.now():nowMs) - ts) / 86400000);
+  if(days<=0) return 'today';
+  if(days===1) return 'yesterday';
+  if(days<7) return days+' days ago';
+  if(days<30){ const w=Math.floor(days/7); return w+(w===1?' week ago':' weeks ago'); }
+  if(days<365){ const m=Math.floor(days/30); return m+(m===1?' month ago':' months ago'); }
+  const y=Math.floor(days/365); return y+(y===1?' year ago':' years ago');
+}
+
 /* ============================== ANALYTICS ============================== */
 const Analytics = {
   charts: {},
+  _milestonesExpanded: false, // transient UI toggle, not persisted
+
+  MILESTONE_META: {
+    first_word: { icon:'📖', text: ()=>'Started your vocabulary journey' },
+    first_mastery: { icon:'⭐', text: (m,word)=>(word?('"'+word.word+'"'):'A word')+' reached '+(m.detail||'Stable')+' mastery' }
+  },
 
   ACHIEVEMENTS: [
     { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1, metric: ctx=>ctx.taughtCount, target:1, unit:'words taught' },
@@ -2923,15 +3079,22 @@ const Analytics = {
     const el = document.getElementById('view-analytics');
     this.destroyCharts();
 
+    // Phase D placement: "This Week" sits above achievements; the milestone wall and
+    // personal bests sit below achievements, above the chart grid -- all three are plain
+    // HTML/CSS (no Chart.js), so unlike the sections below they render in every branch,
+    // including the Chart-unavailable and empty-word-bank early returns.
+    let html = this.renderThisWeekSection() + this.renderAchievementsSection() +
+      this.renderMilestoneWall() + this.renderPersonalBests();
+
     if(typeof Chart === 'undefined'){
-      el.innerHTML = this.renderAchievementsSection() +
-        '<div class="card empty-state"><div class="big">📡</div><h2>Charts unavailable</h2>' +
+      html += '<div class="card empty-state"><div class="big">📡</div><h2>Charts unavailable</h2>' +
         '<p>Chart.js could not be loaded (no cached copy while offline). Everything else in the app still works.</p></div>';
+      el.innerHTML = html;
+      this.wireSectionToggles(el);
       return;
     }
 
     const words = Storage.state.words;
-    let html = this.renderAchievementsSection();
 
     if(words.length===0){
       // The achievements block above (renderAchievementsSection) already renders every
@@ -2940,21 +3103,23 @@ const Analytics = {
       // needs to stop dead-ending and point at what adding a word actually unlocks.
       html += '<div class="card empty-state"><div class="big">📊</div><h2>No chart data yet</h2><p>Your achievement progress above is already tracking. Add and practice your first word to unlock <strong>Words Added Over Time</strong> -- the first analytics chart -- plus mastery, review-load, and dimension charts.</p></div>';
       el.innerHTML = html;
+      this.wireSectionToggles(el);
       return;
     }
 
     html += '<div class="analytics-grid">' +
-      '<div class="chart-card"><h3>Words Added Over Time</h3><div class="chart-sub">Cumulative words added</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Words Added vs. Learned Over Time</h3><div class="chart-sub">Cumulative added vs. cumulative reached Stable+</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
       '<div class="chart-card"><h3>Current Mastery Distribution</h3><div class="chart-sub">Across '+words.length+' word(s)</div><div class="chart-wrap"><canvas id="chartMastery"></canvas></div></div>' +
       '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
       '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged failures by mastery dimension</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
       '</div>';
 
     // Learning Health -- Tier-1 rigor charts read straight off state.fsrsReviewLog via the
-    // pure compute* functions above. All three charts share one data gate (< 20 logged
-    // reviews total): below that, a raw Brier score or per-bucket rate would look far more
-    // authoritative than a sample that small actually supports, so the card shows a
-    // placeholder instead of a chart. Existing four charts above are untouched/unmoved.
+    // pure compute* functions above. All three FSRS-log charts share one data gate (< 20
+    // logged reviews total): below that, a raw Brier score or per-bucket rate would look far
+    // more authoritative than a sample that small actually supports, so the card shows a
+    // placeholder instead of a chart. The consistency heatmap (Phase D) reads dailyActivity
+    // instead, so it's NOT behind that gate -- it renders (possibly all-empty) regardless.
     const reviewLog = Storage.state.fsrsReviewLog || [];
     const hasEnoughReviewData = reviewLog.length >= 20;
     const brier = computeBrier(reviewLog);
@@ -2974,12 +3139,14 @@ const Analytics = {
       '<div class="chart-card"><h3>Retention by Interval</h3><div class="chart-sub">Success rate vs. days since last review</div>' +
         (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartRetentionInterval"></canvas></div>' : lhPlaceholder) +
         '</div>' +
+      this.renderHeatmapCard() +
       '</div>' +
       (fptr.y>0
         ? '<div class="card"><div class="achv-stats-grid"><div class="stat good"><div class="num">'+Math.round(fptr.rate*100)+'%</div><div class="label">First-Post-Teaching Retention ('+fptr.n+'/'+fptr.y+' words)</div></div></div></div>'
         : '');
 
     el.innerHTML = html;
+    this.wireSectionToggles(el);
 
     const css = getComputedStyle(document.documentElement);
     const v = name => css.getPropertyValue(name).trim();
@@ -3014,6 +3181,94 @@ const Analytics = {
     this.charts = {};
   },
 
+  wireSectionToggles(el){
+    const btn = el.querySelector('#milestoneToggleBtn');
+    if(btn) btn.addEventListener('click', ()=>{ this._milestonesExpanded = !this._milestonesExpanded; this.render(); });
+  },
+
+  renderThisWeekSection(){
+    const today = Utils.todayISO();
+    const activity = Storage.state.dailyActivity || {};
+    const wow = computeWeekOverWeek(activity, today);
+    const streak = computeStreakFromActivity(activity, today);
+
+    const deltaHtml = (value, suffix)=>{
+      if(wow.priorWeekEmpty || value==null) return '';
+      if(value===0) return '<span class="delta flat">— no change</span>';
+      const up = value>0;
+      return '<span class="delta '+(up?'up':'down')+'">'+(up?'▲':'▼')+' '+Math.abs(value)+(suffix||'')+' vs last wk</span>';
+    };
+
+    return '<div class="card">' +
+      '<h3 style="margin:0 0 10px;">📅 This Week</h3>' +
+      '<div class="achv-stats-grid">' +
+        '<div class="stat week-stat"><div class="num">'+wow.thisWeek.reviews+'</div><div class="label">Reviews</div>'+deltaHtml(wow.deltas&&wow.deltas.reviews)+'</div>' +
+        '<div class="stat week-stat"><div class="num">'+(wow.thisWeek.accuracy==null?'—':wow.thisWeek.accuracy+'%')+'</div><div class="label">Accuracy</div>'+deltaHtml(wow.deltas&&wow.deltas.accuracy,'pp')+'</div>' +
+        '<div class="stat week-stat"><div class="num">'+wow.thisWeek.newWords+'</div><div class="label">New Words</div>'+deltaHtml(wow.deltas&&wow.deltas.newWords)+'</div>' +
+      '</div>' +
+      '<div class="streak-row">' +
+        '<div class="streak-tile"><div class="num">'+streak.current+'</div><div class="label">🔥 Current Streak</div></div>' +
+        '<div class="streak-tile"><div class="num">'+streak.longest+'</div><div class="label">🏅 Personal Best</div></div>' +
+      '</div>' +
+      '</div>';
+  },
+
+  renderMilestoneWall(){
+    const milestones = Storage.state.milestones || [];
+    if(milestones.length===0) return '';
+    const sorted = milestones.slice().sort((a,b)=>b.ts-a.ts);
+    const shown = this._milestonesExpanded ? sorted : sorted.slice(0,10);
+    const rows = shown.map(m=>{
+      const meta = this.MILESTONE_META[m.type] || { icon:'🏁', text: ()=>m.type };
+      const word = m.wordId ? Storage.state.words.find(w=>w.id===m.wordId) : null;
+      return '<div class="milestone-row"><div class="icon">'+meta.icon+'</div>' +
+        '<div class="text">'+Utils.escapeHtml(meta.text(m, word))+'</div>' +
+        '<div class="when">'+relativeDate(m.ts)+'</div></div>';
+    }).join('');
+    const toggle = sorted.length>10
+      ? '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn ghost small" id="milestoneToggleBtn">'+(this._milestonesExpanded?'Show less':'Show all ('+sorted.length+')')+'</button></div>'
+      : '';
+    return '<div class="card"><h3 style="margin:0 0 6px;">🏁 Milestones</h3>' + rows + toggle + '</div>';
+  },
+
+  renderPersonalBests(){
+    const today = Utils.todayISO();
+    const activity = Storage.state.dailyActivity || {};
+    const streak = computeStreakFromActivity(activity, today);
+    const highestDay = computeHighestSingleDay(activity);
+    const fastest = computeFastestMastery(Storage.state.words || []);
+
+    const rows = [];
+    if(streak.longest>0) rows.push({ label:'Longest streak', value: streak.longest+' day'+(streak.longest===1?'':'s') });
+    if(highestDay) rows.push({ label:'Highest single-day reviews', value: highestDay.reviews+' on '+Utils.fmtDate(highestDay.date) });
+    if(fastest){
+      const d = Math.round(fastest.days);
+      rows.push({ label:'Fastest word to mastery', value: d+' day'+(d===1?'':'s')+' — "'+Utils.escapeHtml(fastest.word)+'"' });
+    }
+    if(rows.length===0) return '';
+
+    return '<div class="card"><h3 style="margin:0 0 6px;">🏆 Personal Bests</h3>' +
+      rows.map(r=>'<div class="pb-row"><span class="pb-label">'+Utils.escapeHtml(r.label)+'</span><span class="pb-value">'+r.value+'</span></div>').join('') +
+      '</div>';
+  },
+
+  renderHeatmapCard(){
+    const today = Utils.todayISO();
+    const cells = computeHeatmapCells(Storage.state.dailyActivity || {}, today, HEATMAP_DAYS);
+    // GitHub-style alignment: pad the front with invisible placeholder cells so the first
+    // real cell lands in its correct weekday row (grid is 7 rows, Sun=0..Sat=6).
+    const firstDow = new Date(cells[0].date+'T00:00:00.000Z').getUTCDay();
+    const pad = Array.from({length:firstDow}, ()=>null);
+    const cellsHtml = pad.concat(cells).map(c=>{
+      if(!c) return '<div class="heatmap-cell" aria-hidden="true" style="visibility:hidden;"></div>';
+      return '<div class="heatmap-cell level-'+c.level+'" role="img" aria-label="'+Utils.fmtDate(c.date)+': '+c.count+' review'+(c.count===1?'':'s')+'"></div>';
+    }).join('');
+    return '<div class="chart-card"><h3>Consistency</h3><div class="chart-sub">Last '+HEATMAP_DAYS+' days — reviews per day</div>' +
+      '<div class="heatmap-scroll"><div class="heatmap-grid">'+cellsHtml+'</div></div>' +
+      '<div class="heatmap-legend">Less <div class="heatmap-cell level-0"></div><div class="heatmap-cell level-1"></div><div class="heatmap-cell level-2"></div><div class="heatmap-cell level-3"></div> More</div>' +
+      '</div>';
+  },
+
   // Any day with practice activity counts -- not just a full 4-phase Session.finish()
   // (sessionLog). Free practice, drills, a timed exam/writing session, and teaching-only
   // steps all write dated entries elsewhere (word.history via WordModel.logAttempt covers
@@ -3044,7 +3299,15 @@ const Analytics = {
     const words = Storage.state.words;
     const taughtCount = words.filter(w=>w.teaching && w.teaching.completed).length;
     const examReadyCount = words.filter(w=>WordModel.computeMastery(w)==='Exam Ready').length;
-    const streak = this.computeStreak();
+    // Phase D: prefer computeStreakFromActivity (reads dailyActivity directly -- broader
+    // and more complete than piecing sessionLog/word.history/writingLog/examLog together)
+    // over this.computeStreak() here. Kept computeStreak defined rather than deleting it --
+    // nothing else in this file calls it anymore after this change, but it's cheap to keep
+    // as a reference/fallback and removing a working function isn't this phase's job.
+    // Using the new source in the SAME ctx that feeds both the display (streak-banner,
+    // Study Streak tile) and the Consistent Learner achievement's check()/metric avoids the
+    // achievements card showing two different streak numbers for the same concept.
+    const streak = computeStreakFromActivity(Storage.state.dailyActivity||{}, Utils.todayISO()).current;
     const errorLogCount = Storage.state.errorLog.length;
     const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;
     return { taughtCount, examReadyCount, streak, errorLogCount, writingSessions };
@@ -3093,6 +3356,12 @@ const Analytics = {
       '</div>';
   },
 
+  // Phase D un-defers Phase A's item #3: the "reached Stable+" line was pulled entirely
+  // (rather than shipped on a last-history-entry-date heuristic) because there was no real
+  // per-word "became Stable" timestamp then. Phase C added word.firstMasteryAt for exactly
+  // this, so the line now uses that real date as its x-coordinate instead of a proxy. Words
+  // with firstMasteryAt===null are excluded from this line only (they still count in the
+  // "added" line via word.created).
   buildLearningProgressData(){
     const words = Storage.state.words;
     const createdDates = words.map(w=>w.created).filter(Boolean).sort();
@@ -3100,27 +3369,31 @@ const Analytics = {
     const earliest = createdDates[0] || today;
     const spanDays = Utils.diffDays(earliest, today);
     const start = spanDays < 29 ? earliest : Utils.addDays(today, -29);
-    const labels = [], data = [];
+    const masteryDates = words
+      .filter(w=>typeof w.firstMasteryAt==='number')
+      .map(w=>new Date(w.firstMasteryAt).toISOString().slice(0,10));
+    const labels = [], added = [], reached = [];
     let cursor = start;
     let guard = 0;
     while(cursor <= today && guard < 400){
       labels.push(cursor);
-      data.push(words.filter(w=>w.created<=cursor).length);
+      added.push(words.filter(w=>w.created<=cursor).length);
+      reached.push(masteryDates.filter(d=>d<=cursor).length);
       cursor = Utils.addDays(cursor, 1);
       guard++;
     }
-    return { labels, data };
+    return { labels, added, reached };
   },
 
   renderProgressChart(theme){
-    const { labels, data } = this.buildLearningProgressData();
+    const { labels, added, reached } = this.buildLearningProgressData();
     this.charts.progress = new Chart(document.getElementById('chartProgress'), {
       type: 'line',
       data: {
         labels: labels.map(d=>Utils.fmtDate(d)),
         datasets: [{
           label: 'Words Added',
-          data,
+          data: added,
           borderColor: theme.accent,
           backgroundColor: theme.accentWash,
           borderWidth: 2,
@@ -3129,13 +3402,25 @@ const Analytics = {
           pointRadius: labels.length>20 ? 0 : 3,
           pointBackgroundColor: theme.accent,
           pointBorderWidth: 0
+        }, {
+          label: 'Reached Stable+',
+          data: reached,
+          borderColor: theme.good,
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          fill: false,
+          tension: .35,
+          pointRadius: labels.length>20 ? 0 : 3,
+          pointBackgroundColor: theme.good,
+          pointBorderWidth: 0
         }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        // Card header above already names the chart, so the built-in title is
-        // skipped to avoid a duplicate line of text (Analytics layout pass).
-        plugins: { legend: { display: false }, title: { display: false } },
+        // Card header above already names the chart, so the built-in title is skipped
+        // (Analytics layout pass) -- but the legend stays on here, unlike most other
+        // charts, since two series now need distinguishing.
+        plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 8, usePointStyle: true, pointStyle: 'circle', font: { size: 11 }, padding: 12 } }, title: { display: false } },
         scales: {
           x: { grid: { display: false }, border: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
           y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }

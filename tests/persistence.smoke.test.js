@@ -50,7 +50,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -1002,4 +1002,151 @@ test('ErrorIntegration.recordProductionError bumps dailyActivity reviews (not co
   E.ErrorIntegration.recordProductionError(w, 'Meaning', 'timed-exam');
   assert.equal(E.Storage.state.dailyActivity[today].reviews, 1);
   assert.equal(E.Storage.state.dailyActivity[today].correct, 0);
+});
+
+/* ---- Analytics Phase D: "This Week" pure aggregations ---- */
+
+test('computeWeekOverWeek: an empty prior week yields priorWeekEmpty=true and deltas=null (no "up from nothing")', () => {
+  const { exports: E } = buildSandbox();
+  const today = '2026-06-15';
+  const activity = {};
+  activity[today] = { reviews: 10, correct: 8, teaching: 0, newWords: 1 };
+  activity[E.Utils.addDays(today, -3)] = { reviews: 5, correct: 5, teaching: 0, newWords: 0 };
+  const result = E.computeWeekOverWeek(activity, today);
+  assert.equal(result.priorWeekEmpty, true);
+  assert.equal(result.deltas, null);
+  assert.equal(result.thisWeek.reviews, 15);
+  assert.equal(result.thisWeek.correct, 13);
+  assert.equal(result.thisWeek.accuracy, 87);
+  assert.equal(result.priorWeek.reviews, 0);
+});
+
+test('computeWeekOverWeek: a non-empty prior week produces real deltas, correctly separated from this week by the 7-day boundary', () => {
+  const { exports: E } = buildSandbox();
+  const today = '2026-06-15';
+  const activity = {};
+  activity[today] = { reviews: 20, correct: 20, teaching: 0, newWords: 2 };
+  activity[E.Utils.addDays(today, -7)] = { reviews: 10, correct: 5, teaching: 0, newWords: 1 };
+  const result = E.computeWeekOverWeek(activity, today);
+  assert.equal(result.priorWeekEmpty, false);
+  assert.equal(result.thisWeek.reviews, 20);
+  assert.equal(result.priorWeek.reviews, 10);
+  assert.equal(result.deltas.reviews, 10);
+  assert.equal(result.deltas.newWords, 1);
+  assert.equal(result.deltas.accuracy, 100 - 50);
+});
+
+test('computeStreakFromActivity: a gap breaks the streak, and the longest historical run can exceed the current one', () => {
+  const { exports: E } = buildSandbox();
+  const today = '2026-06-15';
+  const activity = {};
+  // Older 4-day run: today-10..today-7.
+  [10, 9, 8, 7].forEach(n => { activity[E.Utils.addDays(today, -n)] = { reviews: 1, correct: 1, teaching: 0, newWords: 0 }; });
+  // Gap: today-6..today-2 have no activity at all.
+  // Current 2-day run: today-1, today.
+  [1, 0].forEach(n => { activity[E.Utils.addDays(today, -n)] = { reviews: 1, correct: 1, teaching: 0, newWords: 0 }; });
+  const result = E.computeStreakFromActivity(activity, today);
+  assert.equal(result.current, 2);
+  assert.equal(result.longest, 4);
+});
+
+test('computeStreakFromActivity: current streak is 0 when neither today nor yesterday has activity', () => {
+  const { exports: E } = buildSandbox();
+  const today = '2026-06-15';
+  const activity = {};
+  activity[E.Utils.addDays(today, -5)] = { reviews: 3, correct: 3, teaching: 0, newWords: 0 };
+  const result = E.computeStreakFromActivity(activity, today);
+  assert.equal(result.current, 0);
+  assert.equal(result.longest, 1);
+});
+
+test('computeHeatmapCells: bucket boundaries are 0 / 1-5 / 6-15 / 16+, and cells come back oldest-first for the requested window', () => {
+  const { exports: E } = buildSandbox();
+  const today = '2026-06-15';
+  const activity = {};
+  const withReviews = (n, reviews) => { activity[E.Utils.addDays(today, -n)] = { reviews, correct: 0, teaching: 0, newWords: 0 }; };
+  withReviews(5, 0); withReviews(4, 1); withReviews(3, 5); withReviews(2, 6); withReviews(1, 15); withReviews(0, 16);
+  const cells = E.computeHeatmapCells(activity, today, 6);
+  assert.equal(cells.length, 6);
+  assert.equal(cells[0].date, E.Utils.addDays(today, -5), 'first cell should be the oldest day in the window');
+  assert.equal(cells[5].date, today, 'last cell should be today');
+  const levelByOffset = {};
+  cells.forEach(c => { levelByOffset[E.Utils.diffDays(c.date, today)] = c.level; });
+  assert.equal(levelByOffset[5], 0); // 0 reviews
+  assert.equal(levelByOffset[4], 1); // 1 review
+  assert.equal(levelByOffset[3], 1); // 5 reviews (top of the 1-5 bucket)
+  assert.equal(levelByOffset[2], 2); // 6 reviews (bottom of the 6-15 bucket)
+  assert.equal(levelByOffset[1], 2); // 15 reviews (top of the 6-15 bucket)
+  assert.equal(levelByOffset[0], 3); // 16 reviews
+});
+
+test('computeHighestSingleDay: returns null when every day is zero, rather than a fabricated best', () => {
+  const { exports: E } = buildSandbox();
+  assert.equal(E.computeHighestSingleDay({}), null);
+  assert.equal(E.computeHighestSingleDay({ '2026-01-01': { reviews: 0, correct: 0, teaching: 0, newWords: 0 } }), null);
+});
+
+test('computeHighestSingleDay: picks the date with the most reviews', () => {
+  const { exports: E } = buildSandbox();
+  const best = E.computeHighestSingleDay({
+    '2026-01-01': { reviews: 5, correct: 5, teaching: 0, newWords: 0 },
+    '2026-01-02': { reviews: 12, correct: 10, teaching: 0, newWords: 0 },
+    '2026-01-03': { reviews: 3, correct: 3, teaching: 0, newWords: 0 }
+  });
+  assert.equal(best.date, '2026-01-02');
+  assert.equal(best.reviews, 12);
+});
+
+test('computeFastestMastery: a word with firstMasteryAt===null is excluded, not treated as instant (0-day) mastery', () => {
+  const { exports: E } = buildSandbox();
+  const noMastery = makeWord(E, 'mike');
+  noMastery.created = '2026-01-01';
+  noMastery.firstMasteryAt = null;
+  const slow = makeWord(E, 'november');
+  slow.created = '2026-01-01';
+  slow.firstMasteryAt = new Date('2026-01-31T00:00:00.000Z').getTime(); // 30 days
+  const fast = makeWord(E, 'oscar');
+  fast.created = '2026-01-01';
+  fast.firstMasteryAt = new Date('2026-01-06T00:00:00.000Z').getTime(); // 5 days
+  const best = E.computeFastestMastery([noMastery, slow, fast]);
+  assert.equal(best.word, 'oscar');
+  assert.equal(Math.round(best.days), 5);
+});
+
+test('computeFastestMastery: returns null when no word has reached mastery yet', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'papa');
+  assert.equal(E.computeFastestMastery([w]), null);
+  assert.equal(E.computeFastestMastery([]), null);
+});
+
+test('relativeDate: today, yesterday, and N days ago are worded distinctly', () => {
+  const { exports: E } = buildSandbox();
+  const now = new Date('2026-06-15T12:00:00.000Z').getTime();
+  assert.equal(E.relativeDate(now, now), 'today');
+  assert.equal(E.relativeDate(now - 86400000, now), 'yesterday');
+  assert.equal(E.relativeDate(now - 3 * 86400000, now), '3 days ago');
+});
+
+test('Analytics.renderMilestoneWall: orders milestones most-recent-first regardless of push order', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w1 = makeWord(E, 'quebec'); E.Storage.state.words.push(w1);
+  const w2 = makeWord(E, 'romeo'); E.Storage.state.words.push(w2);
+  const w3 = makeWord(E, 'sierra'); E.Storage.state.words.push(w3);
+  // Pushed oldest-first, out of display order on purpose.
+  E.Milestones.append('first_mastery', { wordId: w1.id, detail: 'Stable' });
+  E.Storage.state.milestones[E.Storage.state.milestones.length - 1].ts = 1000;
+  E.Milestones.append('first_mastery', { wordId: w2.id, detail: 'Stable' });
+  E.Storage.state.milestones[E.Storage.state.milestones.length - 1].ts = 3000;
+  E.Milestones.append('first_mastery', { wordId: w3.id, detail: 'Stable' });
+  E.Storage.state.milestones[E.Storage.state.milestones.length - 1].ts = 2000;
+
+  const html = E.Analytics.renderMilestoneWall();
+  const idxRomeo = html.indexOf('romeo');   // ts 3000, newest
+  const idxSierra = html.indexOf('sierra'); // ts 2000, middle
+  const idxQuebec = html.indexOf('quebec'); // ts 1000, oldest
+  assert.ok(idxRomeo > -1 && idxSierra > -1 && idxQuebec > -1);
+  assert.ok(idxRomeo < idxSierra, 'romeo (newest) should render before sierra (middle)');
+  assert.ok(idxSierra < idxQuebec, 'sierra (middle) should render before quebec (oldest)');
 });
