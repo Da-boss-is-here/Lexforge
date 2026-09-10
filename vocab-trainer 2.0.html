@@ -2976,12 +2976,10 @@ function computeWeekOverWeek(dailyActivity, todayISO){
 
 // Current streak (consecutive days with any activity, ending today or yesterday if today
 // hasn't happened yet) and longest-ever streak, both scanned directly from dailyActivity --
-// a broader, more complete source than Analytics.computeStreak (which reads sessionLog/
-// word.history/writingLog/examLog piecemeal). Kept as a separate function rather than
-// replacing computeStreak's internals: computeStreak is still what feeds achievement
-// unlock checks (buildAchievementContext), and swapping its data source would silently
-// change which day an achievement unlocks on -- a behavior change this phase doesn't ask
-// for. This function only feeds the new "This Week" display.
+// a single, already-unified source (every write path bumps it) rather than piecing together
+// sessionLog/word.history/writingLog/examLog by hand. This is now the only streak source in
+// the app (Phase E removed the old Analytics.computeStreak/activityDates entirely) -- it
+// feeds both the "This Week" display and buildAchievementContext's ctx.streak.
 function computeStreakFromActivity(dailyActivity, todayISO){
   const dates = Object.keys(dailyActivity||{}).filter(d=>{
     const b = dailyActivity[d];
@@ -3071,7 +3069,7 @@ const Analytics = {
     { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5, metric: ctx=>ctx.errorLogCount, target:5, unit:'errors logged' },
     { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1, metric: ctx=>ctx.examReadyCount, target:1, unit:'words exam-ready' },
     { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10, metric: ctx=>ctx.examReadyCount, target:10, unit:'words exam-ready' },
-    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7, metric: ctx=>ctx.streak, target:7, unit:'day streak' },
+    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day activity streak.', check: ctx=>ctx.streak>=7, metric: ctx=>ctx.streak, target:7, unit:'day streak' },
     { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1, metric: ctx=>ctx.writingSessions, target:1, unit:'sessions' }
   ],
 
@@ -3269,29 +3267,6 @@ const Analytics = {
       '</div>';
   },
 
-  // Any day with practice activity counts -- not just a full 4-phase Session.finish()
-  // (sessionLog). Free practice, drills, a timed exam/writing session, and teaching-only
-  // steps all write dated entries elsewhere (word.history via WordModel.logAttempt covers
-  // teaching + retrieval + matched-word writing/exam attempts; writingLog/examLog also carry
-  // their own session date even when a free-write matches no target word). Union all of them.
-  activityDates(){
-    const dates = new Set((Storage.state.sessionLog||[]).map(s=>s.date));
-    (Storage.state.writingLog||[]).forEach(s=>{ if(s.date) dates.add(s.date); });
-    (Storage.state.examLog||[]).forEach(s=>{ if(s.date) dates.add(s.date); });
-    Storage.state.words.forEach(w=>(w.history||[]).forEach(h=>{ if(h.date) dates.add(h.date); }));
-    return dates;
-  },
-
-  computeStreak(){
-    const dates = this.activityDates();
-    if(dates.size===0) return 0;
-    let streak = 0;
-    let cursor = Utils.todayISO();
-    if(!dates.has(cursor)) cursor = Utils.addDays(cursor, -1);
-    while(dates.has(cursor)){ streak++; cursor = Utils.addDays(cursor, -1); }
-    return streak;
-  },
-
   // Extracted so Achievements.evaluate (write path, Phase C) and this render (read path)
   // compute the unlock context identically, rather than keeping two copies of this logic
   // in sync by hand.
@@ -3299,14 +3274,10 @@ const Analytics = {
     const words = Storage.state.words;
     const taughtCount = words.filter(w=>w.teaching && w.teaching.completed).length;
     const examReadyCount = words.filter(w=>WordModel.computeMastery(w)==='Exam Ready').length;
-    // Phase D: prefer computeStreakFromActivity (reads dailyActivity directly -- broader
-    // and more complete than piecing sessionLog/word.history/writingLog/examLog together)
-    // over this.computeStreak() here. Kept computeStreak defined rather than deleting it --
-    // nothing else in this file calls it anymore after this change, but it's cheap to keep
-    // as a reference/fallback and removing a working function isn't this phase's job.
-    // Using the new source in the SAME ctx that feeds both the display (streak-banner,
-    // Study Streak tile) and the Consistent Learner achievement's check()/metric avoids the
-    // achievements card showing two different streak numbers for the same concept.
+    // computeStreakFromActivity feeds both the display (streak-banner, Study Streak tile)
+    // and the Consistent Learner achievement's check()/metric, in the same ctx -- avoids the
+    // achievements card ever showing two different streak numbers for the same concept.
+    // (Phase E removed the old Analytics.computeStreak/activityDates, which this replaced.)
     const streak = computeStreakFromActivity(Storage.state.dailyActivity||{}, Utils.todayISO()).current;
     const errorLogCount = Storage.state.errorLog.length;
     const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;

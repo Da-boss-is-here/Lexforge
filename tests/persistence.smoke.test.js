@@ -462,65 +462,17 @@ function makeWord(E, word) {
   });
 }
 
-test('computeStreak: a day with only teaching activity (no full Session, no sessionLog entry) still counts', () => {
+// Analytics.computeStreak()/activityDates() were removed in Phase E (superseded by
+// computeStreakFromActivity, which reads the single unified dailyActivity source -- see its
+// own tests above). The teaching-only-day case those old tests covered is re-asserted here
+// against the function that actually ships now.
+test('computeStreakFromActivity: a day with only teaching>0 (no reviews at all) still counts', () => {
   const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const w = makeWord(E, 'alpha');
-  const today = E.Utils.todayISO();
-  // Simulate a teaching-only step, no sessionLog entry (Session.finish() never ran).
-  w.history.push({ ts: Date.now(), date: today, level: 0, correct: true, phase: 'teaching', step: 1 });
-  E.Storage.state.words.push(w);
-
-  assert.equal(E.Storage.state.sessionLog.length, 0, 'sanity: no full-session log for this day');
-  assert.equal(E.Analytics.computeStreak(), 1, 'teaching-only activity should count as a streak day');
-});
-
-test('computeStreak: a drill/practice attempt with no matching word.history phase still counts (levels 1-4)', () => {
-  const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const w = makeWord(E, 'bravo');
-  const today = E.Utils.todayISO();
-  w.history.push({ ts: Date.now(), date: today, level: 2, correct: false, errorCategory: 'Meaning' });
-  E.Storage.state.words.push(w);
-
-  assert.equal(E.Analytics.computeStreak(), 1);
-});
-
-test('computeStreak: a free-write session with no matched target words still counts via writingLog', () => {
-  const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const today = E.Utils.todayISO();
-  E.Storage.state.writingLog.push({ ts: Date.now(), date: today, text: 'free write', errors: [] });
-
-  assert.equal(E.Analytics.computeStreak(), 1);
-});
-
-test('computeStreak: consecutive days of mixed activity types (no full sessions at all) chain into a multi-day streak', () => {
-  const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const w = makeWord(E, 'charlie');
-  const today = E.Utils.todayISO();
-  const yesterday = E.Utils.addDays(today, -1);
-  const twoDaysAgo = E.Utils.addDays(today, -2);
-  w.history.push({ ts: Date.now(), date: twoDaysAgo, level: 0, correct: true, phase: 'teaching' });
-  w.history.push({ ts: Date.now(), date: yesterday, level: 3, correct: true });
-  E.Storage.state.words.push(w);
-  E.Storage.state.examLog.push({ ts: Date.now(), date: today, prompt: 'p', minutes: 10, text: 't', targetWords: [] });
-
-  assert.equal(E.Analytics.computeStreak(), 3);
-});
-
-test('computeStreak: a gap day breaks the streak', () => {
-  const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const w = makeWord(E, 'delta');
-  const today = E.Utils.todayISO();
-  const threeDaysAgo = E.Utils.addDays(today, -3);
-  w.history.push({ ts: Date.now(), date: threeDaysAgo, level: 0, correct: true, phase: 'teaching' });
-  w.history.push({ ts: Date.now(), date: today, level: 1, correct: true });
-  E.Storage.state.words.push(w);
-
-  assert.equal(E.Analytics.computeStreak(), 1, 'the isolated old day should not chain through the gap');
+  const today = '2026-06-15';
+  const activity = {};
+  activity[today] = { reviews: 0, correct: 0, teaching: 2, newWords: 0 };
+  const result = E.computeStreakFromActivity(activity, today);
+  assert.equal(result.current, 1);
 });
 
 test('accuracy split: teaching-phase attempts are excluded from headline (retrieval) accuracy but included in teaching accuracy', () => {
