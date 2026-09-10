@@ -609,7 +609,15 @@ function defaultState(){
     // Per-review measurement log for FSRS-scheduled dimensions (Phase 5 groundwork). Separate from
     // word.history so analytics doesn't need to filter mixed-type entries. Capped, see Storage.save.
     fsrsReviewLog: [], // {ts, wordId, dimension, rating, predictedR, outcome, desiredRetentionAtSchedule, stabilityBefore, stabilityAfter, difficultyBefore, difficultyAfter, elapsedDays, scheduledDays}
-    practiceSession: null // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
+    practiceSession: null, // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
+    // Phase C groundwork for Phase D analytics -- infrastructure only, nothing reads these yet.
+    dailyActivity: {}, // { 'YYYY-MM-DD': {reviews, correct, teaching, newWords} } -- see DailyActivity.bump / Storage.backfillDailyActivity
+    achievements: {}, // { id: {unlockedAt: ts|null} } -- see Achievements.evaluate
+    milestones: [], // append-only [{ts, type, wordId?, detail?}] -- see Milestones.append
+    // One-shot guard for the dailyActivity backfill (see Storage.backfillDailyActivity):
+    // null until the historical reconstruction has run once; never touched again afterward,
+    // so it doesn't clobber live DailyActivity.bump writes accumulated since.
+    dailyActivityBackfilledAt: null
   };
 }
 
@@ -633,6 +641,26 @@ function validateAndRepair(raw){
   if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
     out.practiceSession = raw.practiceSession;
   }
+  if(raw.dailyActivity && typeof raw.dailyActivity==='object' && !Array.isArray(raw.dailyActivity)){
+    Object.keys(raw.dailyActivity).forEach(date=>{
+      const v = raw.dailyActivity[date];
+      if(!v || typeof v!=='object') return;
+      out.dailyActivity[date] = {
+        reviews: Number(v.reviews)||0, correct: Number(v.correct)||0,
+        teaching: Number(v.teaching)||0, newWords: Number(v.newWords)||0
+      };
+    });
+  }
+  if(raw.achievements && typeof raw.achievements==='object' && !Array.isArray(raw.achievements)){
+    Object.keys(raw.achievements).forEach(id=>{
+      const v = raw.achievements[id];
+      out.achievements[id] = { unlockedAt: (v && typeof v==='object' && (typeof v.unlockedAt==='number' || v.unlockedAt===null)) ? v.unlockedAt : null };
+    });
+  }
+  if(Array.isArray(raw.milestones)){
+    out.milestones = raw.milestones.filter(m=>m && typeof m==='object' && typeof m.ts==='number' && typeof m.type==='string');
+  }
+  out.dailyActivityBackfilledAt = typeof raw.dailyActivityBackfilledAt==='number' ? raw.dailyActivityBackfilledAt : null;
   return out;
 }
 
@@ -662,6 +690,10 @@ function repairWord(w){
     errorCounts: w.errorCounts && typeof w.errorCounts==='object' ? w.errorCounts : {},
     lastClozeIndex: typeof w.lastClozeIndex==='number' ? w.lastClozeIndex : -1,
     wordType: WORD_TYPES.some(t=>t.key===w.wordType) ? w.wordType : 'general',
+    // Phase C: when this word first reached Stable-or-better mastery, for Phase D. Never
+    // backfilled retroactively (unknowable for existing saves) -- starts null, set going
+    // forward the first time computeMastery crosses the threshold (see checkFirstMastery).
+    firstMasteryAt: typeof w.firstMasteryAt==='number' ? w.firstMasteryAt : null,
     dims: repairDims(w.dims),
     fsrs: FSRSScheduler.repairWordFsrs(w.fsrs),
     teaching: (w.teaching && typeof w.teaching==='object') ? {
@@ -687,11 +719,45 @@ const Storage = {
       raw = null;
     }
     this.state = validateAndRepair(raw);
+    this.backfillDailyActivity();
     this.save();
   },
   save(){
     try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state)); }
     catch(e){ Utils.toast('Could not save — storage may be full.'); }
+  },
+  // One-time historical reconstruction of dailyActivity from state that already exists
+  // (word.history + word.created) -- see DailyActivity for the live-write half of this.
+  // Idempotency: guarded by dailyActivityBackfilledAt so it only ever runs once per save;
+  // re-running the raw accumulation logic itself would also reproduce identical totals
+  // (it's a full recompute into a fresh object, not an additive bump against whatever's
+  // already there), but the guard is what actually prevents a second run from clobbering
+  // any live DailyActivity.bump writes made since the first backfill.
+  backfillDailyActivity(){
+    if(this.state.dailyActivityBackfilledAt) return;
+    const activity = {};
+    const bump = (date, key) => {
+      if(!date) return;
+      if(!activity[date]) activity[date] = { reviews:0, correct:0, teaching:0, newWords:0 };
+      activity[date][key]++;
+    };
+    this.state.words.forEach(w=>{
+      (w.history||[]).forEach(h=>{
+        if(!h || !h.date) return;
+        if(h.phase==='teaching') bump(h.date, 'teaching');
+        else { bump(h.date, 'reviews'); if(h.correct) bump(h.date, 'correct'); }
+      });
+      if(w.created) bump(w.created, 'newWords');
+    });
+    // writingLog/examLog entries are whole sessions (a free write, a timed exam), not
+    // individual reviews or new words -- folding a session in as "1 review" would conflate
+    // two different units, and double-count on top of it: any target word actually matched
+    // during that session already has its own word.history entry from
+    // ErrorIntegration.recordProductionError/Success, which the loop above already counts.
+    // An unmatched free-write has no per-word signal to attach a review to at all. Decision:
+    // leave writingLog/examLog out of the dailyActivity backfill entirely.
+    this.state.dailyActivity = activity;
+    this.state.dailyActivityBackfilledAt = Date.now();
   },
   exportJSON(){
     const blob = new Blob([JSON.stringify(this.state,null,2)], {type:'application/json'});
@@ -711,6 +777,7 @@ const Storage = {
     }
     if(mode==='replace'){
       this.state = incoming;
+      this.backfillDailyActivity();
     } else {
       const existingIds = new Set(this.state.words.map(w=>w.id));
       const merged = this.state.words.slice();
@@ -724,10 +791,65 @@ const Storage = {
   }
 };
 
+/* ============================== PHASE C INFRASTRUCTURE ==============================
+   Small, pure-ish (they mutate Storage.state, but take no DOM and render nothing) helpers
+   for Phase D. Nothing in the app reads their output yet -- this phase only wires the
+   writes so the data exists by the time Phase D needs it. */
+
+const DailyActivity = {
+  // Adds `deltas` (any of {reviews, correct, teaching, newWords}) onto today's-or-any
+  // given date's bucket, creating it if needed. Additive, not idempotent by itself --
+  // callers are responsible for calling it exactly once per real event (see the call
+  // sites listed in the Phase C commit/report).
+  bump(date, deltas){
+    if(!date || !deltas) return;
+    if(!Storage.state.dailyActivity[date]){
+      Storage.state.dailyActivity[date] = { reviews:0, correct:0, teaching:0, newWords:0 };
+    }
+    const bucket = Storage.state.dailyActivity[date];
+    ['reviews','correct','teaching','newWords'].forEach(k=>{
+      if(typeof deltas[k]==='number' && deltas[k]) bucket[k] += deltas[k];
+    });
+  }
+};
+
+const Milestones = {
+  // first_word is meant to fire exactly once ever -- guarded here (not just at the one
+  // call site) so the "fires once" contract holds regardless of how many places end up
+  // calling append('first_word', ...) in later phases.
+  append(type, opts){
+    if(!type) return;
+    if(type==='first_word' && Storage.state.milestones.some(m=>m.type==='first_word')) return;
+    opts = opts || {};
+    const entry = { ts: Date.now(), type };
+    if(opts.wordId) entry.wordId = opts.wordId;
+    if(opts.detail !== undefined) entry.detail = opts.detail;
+    Storage.state.milestones.push(entry);
+  }
+};
+
+const Achievements = {
+  // Idempotent by design (only ever sets unlockedAt if it's currently missing/null), so
+  // it's safe to call from many write paths without worrying about double-firing --
+  // unlike DailyActivity.bump, calling this extra times costs nothing.
+  evaluate(ctx){
+    Analytics.ACHIEVEMENTS.forEach(a=>{
+      if(!a.check(ctx)) return;
+      if(!Storage.state.achievements[a.id]) Storage.state.achievements[a.id] = { unlockedAt: null };
+      if(!Storage.state.achievements[a.id].unlockedAt) Storage.state.achievements[a.id].unlockedAt = Date.now();
+    });
+  }
+};
+
 /* ============================== WORD MODEL / SRS / MASTERY ============================== */
 const WordModel = {
   create(fields){
-    return {
+    // Phase C: the very first word ever added gets a one-time 'first_word' milestone.
+    // Checked BEFORE constructing/pushing the new word, since Storage.state.words.length
+    // is still the pre-creation count here; Milestones.append also self-guards this type,
+    // so this stays correct even if a caller somehow checks it twice.
+    const isFirstEver = !!(Storage.state && Storage.state.words && Storage.state.words.length===0);
+    const word = {
       id: Utils.uid(),
       word: fields.word.trim(),
       meaning: fields.meaning.trim(),
@@ -747,10 +869,13 @@ const WordModel = {
       errorCounts: {},
       lastClozeIndex: -1,
       wordType: WORD_TYPES.some(t=>t.key===fields.wordType) ? fields.wordType : 'general',
+      firstMasteryAt: null,
       dims: freshDims(),
       fsrs: FSRSScheduler.freshWordFsrs(),
       teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }
     };
+    if(isFirstEver) Milestones.append('first_word', { wordId: word.id });
+    return word;
   },
 
   blank(sentence, word){
@@ -915,6 +1040,21 @@ const WordModel = {
     return 'Learning';
   },
 
+  // Phase C: shared by Teaching.finishWord and Practice.handleGraded's success path so
+  // "firstMasteryAt gets set" and "a milestone gets appended" always happen together,
+  // regardless of which code path is the one that actually observes the word crossing
+  // into Stable/Exam Ready for the first time -- calls computeMastery (read-only), never
+  // recomputes mastery itself. Set-once: does nothing once firstMasteryAt is already set,
+  // so a word that later wobbles back down to Unstable and returns to Stable keeps its
+  // original date.
+  checkFirstMastery(word){
+    if(word.firstMasteryAt) return;
+    const stage = this.computeMastery(word);
+    if(stage!=='Stable' && stage!=='Exam Ready') return;
+    word.firstMasteryAt = Date.now();
+    Milestones.append('first_mastery', { wordId: word.id, detail: stage });
+  },
+
   isOverdue(word){ return word.history.length>0 && word.srs.nextReview < Utils.todayISO(); },
   isDueToday(word){ return word.history.length>0 && word.srs.nextReview === Utils.todayISO(); },
   isNew(word){ return word.history.length===0; },
@@ -952,6 +1092,11 @@ const ErrorIntegration = {
     word.srs.interval = 1;
     word.srs.nextReview = Utils.todayISO();
     word.levelState.level = Utils.clamp(word.levelState.level, 2, 3);
+    // Phase C: this is a graded attempt too (level 4, phase 'writing'/'exam', never
+    // 'teaching'), just one that doesn't go through Practice.handleGraded -- bump the
+    // same `reviews` bucket it would otherwise land in, on the caller's behalf.
+    DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
+    Achievements.evaluate(Analytics.buildAchievementContext());
   },
   /* Records a confirmed-correct production-context usage (exam "used correctly"). */
   recordProductionSuccess(word, source){
@@ -960,6 +1105,9 @@ const ErrorIntegration = {
     WordModel.applyRating(word, 'easy');
     DimModel.record(word, 'independentProduction', true);
     DimModel.record(word, 'novelApplication', true);
+    WordModel.checkFirstMastery(word);
+    DailyActivity.bump(Utils.todayISO(), { reviews: 1, correct: 1 });
+    Achievements.evaluate(Analytics.buildAchievementContext());
   }
 };
 
@@ -2211,7 +2359,7 @@ const Views = {
         });
       });
       contBtn.addEventListener('click', ()=>{
-        WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat });
+        WordModel.logAttempt(word, question.level, false, { rating:'again', errorCategory: chosenCat, hinted: !!s.hintUsed });
         WordModel.logError(word, chosenCat, question.level, QUESTION_TYPE_TO_DIMS[question.type]);
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, 'again');
@@ -2219,6 +2367,8 @@ const Views = {
           WordModel.updateLadder(word, question.level, false);
           WordModel.applyRating(word, 'again');
         }
+        DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
+        Achievements.evaluate(Analytics.buildAchievementContext());
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:false, category: chosenCat });
         s.idx++;
@@ -2227,7 +2377,7 @@ const Views = {
       });
     } else {
       const finish = (rating)=>{
-        WordModel.logAttempt(word, question.level, true, { rating });
+        WordModel.logAttempt(word, question.level, true, { rating, hinted: !!s.hintUsed });
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, rating);
         } else {
@@ -2235,6 +2385,12 @@ const Views = {
           WordModel.applyRating(word, rating);
         }
         this.recordDimForQuestion(question, true);
+        // Phase C: after the grade is written (mirrors the "write result first" ordering
+        // already used by gradeFsrs, so computeMastery sees this attempt), check whether
+        // this is the first time the word crosses into Stable/Exam Ready.
+        WordModel.checkFirstMastery(word);
+        DailyActivity.bump(Utils.todayISO(), { reviews: 1, correct: 1 });
+        Achievements.evaluate(Analytics.buildAchievementContext());
         Storage.save();
         s.results.push({ idx: s.idx, word, question, userVal, correct:true, rating });
         s.idx++;
@@ -2868,10 +3024,21 @@ const Analytics = {
     return streak;
   },
 
-  renderAchievementsSection(){
+  // Extracted so Achievements.evaluate (write path, Phase C) and this render (read path)
+  // compute the unlock context identically, rather than keeping two copies of this logic
+  // in sync by hand.
+  buildAchievementContext(){
     const words = Storage.state.words;
     const taughtCount = words.filter(w=>w.teaching && w.teaching.completed).length;
     const examReadyCount = words.filter(w=>WordModel.computeMastery(w)==='Exam Ready').length;
+    const streak = this.computeStreak();
+    const errorLogCount = Storage.state.errorLog.length;
+    const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;
+    return { taughtCount, examReadyCount, streak, errorLogCount, writingSessions };
+  },
+
+  renderAchievementsSection(){
+    const words = Storage.state.words;
     const totalAttempts = words.reduce((sum,w)=>sum+w.history.length, 0);
     // Headline accuracy is retrieval-only (phase!=='teaching'): teaching-phase attempts are
     // scaffolded MCQ/self-graded steps with the answer visible, so folding them into the
@@ -2882,12 +3049,10 @@ const Analytics = {
     const teachingAttempts = totalAttempts - retrievalAttempts;
     const teachingCorrect = words.reduce((sum,w)=>sum+w.history.filter(h=>h.phase==='teaching'&&h.correct).length, 0);
     const teachingAccuracy = teachingAttempts ? Math.round(teachingCorrect/teachingAttempts*100) : 0;
-    const streak = this.computeStreak();
     const fullSessionCount = (Storage.state.sessionLog||[]).length;
-    const errorLogCount = Storage.state.errorLog.length;
-    const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;
 
-    const ctx = { taughtCount, examReadyCount, streak, errorLogCount, writingSessions };
+    const ctx = this.buildAchievementContext();
+    const { streak, examReadyCount } = ctx;
 
     const cards = this.ACHIEVEMENTS.map(a=>{
       const unlocked = a.check(ctx);
@@ -3233,6 +3398,17 @@ const Session = {
 
   finish(){
     this.active = false;
+    // Phase C: NOT bumping DailyActivity.reviews/correct from this.log here -- every item
+    // in this.log.reviewed/correct/errors already went through Practice.handleGraded during
+    // the session (this.log is built from the same `results` that handleGraded pushed to
+    // s.results, see finishPhase), which already bumped `reviews`/`correct` per attempt.
+    // Re-bumping from the session-level aggregate here would double-count every one of
+    // those attempts. newAdded is the one counter here with no other live-bump source
+    // (WordModel.create only appends the first_word milestone, it doesn't bump
+    // dailyActivity.newWords going forward -- see the Phase C report), so that's the only
+    // piece of this.log this function contributes.
+    if(this.log.newAdded) DailyActivity.bump(Utils.todayISO(), { newWords: this.log.newAdded });
+    Achievements.evaluate(Analytics.buildAchievementContext());
     Storage.state.sessionLog.push({ ts: Date.now(), date: Utils.todayISO(), summary: Object.assign({}, this.log) });
     Storage.save();
     const el = document.getElementById('view-practice');
@@ -3318,6 +3494,19 @@ const Teaching = {
     word.teaching.completed = true;
     word.teaching.currentStep = 8;
     word.srs.nextReview = Utils.todayISO();
+    // Phase C: teaching.completed just flipped true, which is a precondition computeMastery
+    // checks first -- in practice a freshly-taught word still has no non-teaching history
+    // yet, so this will almost always no-op (checkFirstMastery reads the flag, doesn't
+    // change the mastery math), but a word re-taught after already having retrieval history
+    // could legitimately already qualify, so the check belongs here regardless.
+    WordModel.checkFirstMastery(word);
+    // Not bumping DailyActivity.teaching here: the backfill counts one `teaching` unit per
+    // history entry with phase==='teaching' (each of the 8 teaching steps logs its own
+    // attempt via WordModel.logAttempt at several call sites inside the Teaching module,
+    // none of which are finishWord). Bumping +1 here instead would count "one word finished
+    // teaching today" -- a different, incompatible unit -- and silently mix the two
+    // definitions in the same field. Left unwired going forward; see the Phase C report.
+    Achievements.evaluate(Analytics.buildAchievementContext());
     Storage.save();
     Utils.toast('"'+word.word+'" is ready for retrieval practice.');
     this.state = null;

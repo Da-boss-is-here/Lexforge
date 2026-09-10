@@ -50,7 +50,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -759,4 +759,247 @@ test('computeFirstPostTeachingRetention: mixed set of words produces the right n
   assert.equal(result.n, 1);
   assert.equal(result.y, 2);
   assert.equal(result.rate, 0.5);
+});
+
+/* ---- Analytics Phase C: dailyActivity/achievements/milestones/firstMasteryAt infrastructure ---- */
+
+test('DailyActivity.bump: accumulates across repeated calls on the same date, and on separate dates independently', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.DailyActivity.bump('2026-01-05', { reviews: 2, correct: 1 });
+  E.DailyActivity.bump('2026-01-05', { reviews: 1, teaching: 3 });
+  E.DailyActivity.bump('2026-01-06', { newWords: 1 });
+  const jan5 = E.Storage.state.dailyActivity['2026-01-05'];
+  const jan6 = E.Storage.state.dailyActivity['2026-01-06'];
+  assert.equal(jan5.reviews, 3);
+  assert.equal(jan5.correct, 1);
+  assert.equal(jan5.teaching, 3);
+  assert.equal(jan5.newWords, 0);
+  assert.equal(jan6.newWords, 1);
+  assert.equal(jan6.reviews, 0);
+});
+
+test('DailyActivity.bump: a falsy date or missing deltas is a no-op, not a crash', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  assert.doesNotThrow(() => E.DailyActivity.bump(null, { reviews: 1 }));
+  assert.doesNotThrow(() => E.DailyActivity.bump('2026-01-05', null));
+  assert.deepEqual(Object.keys(E.Storage.state.dailyActivity), []);
+});
+
+test('backfillDailyActivity: buckets a teaching-phase history entry under `teaching`, a non-teaching entry under `reviews`/`correct`, and word.created under `newWords`, on their own dates', () => {
+  const { exports: E } = buildSandbox();
+  const raw = {
+    version: 2,
+    words: [{
+      id: 'w1', word: 'alpha', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+      contexts: [], production: '', cloze: [], created: '2026-02-01',
+      srs: { interval: 1, nextReview: '2026-02-01', easeStreak: 0, lastPracticed: null },
+      levelState: { level: 2 }, errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+      history: [
+        { ts: 1, date: '2026-02-02', level: 0, correct: true, phase: 'teaching' },
+        { ts: 2, date: '2026-02-03', level: 2, correct: true },
+        { ts: 3, date: '2026-02-03', level: 2, correct: false }
+      ]
+    }],
+    errorLog: [], settings: { examDate: null, theme: 'system' },
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  };
+  E.Storage.state = E.validateAndRepair(raw);
+  E.Storage.backfillDailyActivity();
+  assert.equal(E.Storage.state.dailyActivity['2026-02-01'].newWords, 1);
+  assert.equal(E.Storage.state.dailyActivity['2026-02-02'].teaching, 1);
+  assert.equal(E.Storage.state.dailyActivity['2026-02-03'].reviews, 2);
+  assert.equal(E.Storage.state.dailyActivity['2026-02-03'].correct, 1);
+});
+
+test('backfillDailyActivity: running it twice does not double-count (one-shot guard)', () => {
+  const { exports: E } = buildSandbox();
+  const raw = {
+    version: 2,
+    words: [{
+      id: 'w1', word: 'bravo', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+      contexts: [], production: '', cloze: [], created: '2026-02-10',
+      srs: { interval: 1, nextReview: '2026-02-10', easeStreak: 0, lastPracticed: null },
+      levelState: { level: 2 }, errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+      history: [{ ts: 1, date: '2026-02-10', level: 2, correct: true }]
+    }],
+    errorLog: [], settings: { examDate: null, theme: 'system' },
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  };
+  // Bypass Storage.load() (which would run the backfill itself against localStorage-sourced
+  // state) so this test controls exactly when backfillDailyActivity() first runs.
+  E.Storage.state = E.validateAndRepair(raw);
+  E.Storage.backfillDailyActivity();
+  const firstPassCount = E.Storage.state.dailyActivity['2026-02-10'].reviews;
+  const backfilledAt = E.Storage.state.dailyActivityBackfilledAt;
+  assert.equal(firstPassCount, 1);
+  assert.ok(backfilledAt);
+
+  E.Storage.backfillDailyActivity(); // second call -- guard should make this a no-op
+  assert.equal(E.Storage.state.dailyActivity['2026-02-10'].reviews, 1, 'reviews must not double from 1 to 2');
+  assert.equal(E.Storage.state.dailyActivityBackfilledAt, backfilledAt, 'the guard timestamp itself must not be touched on the no-op call');
+});
+
+test('validateAndRepair accepts a save missing all five Phase C fields (pre-Phase-C save) without throwing, and defaults them', () => {
+  const { exports: E } = buildSandbox();
+  const legacy = {
+    version: 2,
+    words: [{ id: 'w1', word: 'legacy', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '', contexts: [], production: '', cloze: [], created: '2025-01-01', srs: { interval: 1, nextReview: '2025-01-01', easeStreak: 0, lastPracticed: null }, levelState: { level: 2 }, history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general', teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} } }],
+    errorLog: [], settings: { examDate: null, theme: 'system' }, sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+    // no dailyActivity, achievements, milestones, dailyActivityBackfilledAt; word has no firstMasteryAt
+  };
+  const repaired = E.validateAndRepair(legacy);
+  assert.equal(Object.keys(repaired.dailyActivity).length, 0);
+  assert.equal(Object.keys(repaired.achievements).length, 0);
+  assert.equal(repaired.milestones.length, 0);
+  assert.equal(repaired.dailyActivityBackfilledAt, null);
+  assert.equal(repaired.words[0].firstMasteryAt, null);
+});
+
+test('validateAndRepair does not crash on garbage/partial Phase C field values', () => {
+  const { exports: E } = buildSandbox();
+  const garbage = {
+    version: 2, words: [], errorLog: [], settings: {}, sessionLog: [], writingLog: [], examLog: [], practiceSession: null,
+    dailyActivity: { '2026-01-01': { reviews: 'not a number', correct: null }, 'bad-bucket': 'not even an object', ok: null },
+    achievements: { first_word: { unlockedAt: 'garbage' }, scholar: 'not an object', good_one: { unlockedAt: 123 } },
+    milestones: [{ ts: 1, type: 'first_word' }, 'not an object', { ts: 'nope', type: 'x' }, { type: 'missing_ts' }],
+    dailyActivityBackfilledAt: 'garbage'
+  };
+  assert.doesNotThrow(() => E.validateAndRepair(garbage));
+  const repaired = E.validateAndRepair(garbage);
+  assert.equal(repaired.dailyActivity['2026-01-01'].reviews, 0);
+  assert.equal(repaired.dailyActivity['2026-01-01'].correct, 0);
+  assert.equal(repaired.dailyActivity.ok, undefined, 'a non-object bucket value should be skipped, not crash');
+  assert.equal(repaired.achievements.first_word.unlockedAt, null, 'a garbage unlockedAt should fall back to null');
+  assert.equal(repaired.achievements.good_one.unlockedAt, 123);
+  assert.equal(repaired.milestones.length, 1, 'only the one well-formed milestone entry should survive');
+  assert.equal(repaired.dailyActivityBackfilledAt, null);
+});
+
+test("Milestones.append('first_word', ...) fires only once even if called multiple times directly", () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Milestones.append('first_word', { wordId: 'w1' });
+  E.Milestones.append('first_word', { wordId: 'w2' });
+  E.Milestones.append('first_word', { wordId: 'w3' });
+  const firstWordEntries = E.Storage.state.milestones.filter(m => m.type === 'first_word');
+  assert.equal(firstWordEntries.length, 1);
+  assert.equal(firstWordEntries[0].wordId, 'w1', 'the first call should be the one that sticks');
+});
+
+test('WordModel.create appends the first_word milestone only for the very first word ever created', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const fields = { word: 'x', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '', contexts: [], production: '', cloze: [], wordType: 'general' };
+  const w1 = E.WordModel.create(fields);
+  E.Storage.state.words.push(w1);
+  const w2 = E.WordModel.create(Object.assign({}, fields, { word: 'y' }));
+  E.Storage.state.words.push(w2);
+  const firstWordEntries = E.Storage.state.milestones.filter(m => m.type === 'first_word');
+  assert.equal(firstWordEntries.length, 1);
+  assert.equal(firstWordEntries[0].wordId, w1.id);
+});
+
+test('WordModel.create does not crash when Storage.state has not been loaded yet (no first_word milestone either, since there is nothing to compare against)', () => {
+  const { exports: E } = buildSandbox();
+  const fields = { word: 'x', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '', contexts: [], production: '', cloze: [], wordType: 'general' };
+  assert.doesNotThrow(() => E.WordModel.create(fields));
+});
+
+function makeStableWord(E, word) {
+  const w = makeWord(E, word);
+  w.teaching.completed = true;
+  w.levelState.level = 3;
+  w.srs.interval = 10;
+  for (let i = 0; i < 5; i++) w.history.push({ ts: i, date: '2026-03-0' + (i + 1), level: 2, correct: true });
+  return w;
+}
+
+test('WordModel.checkFirstMastery: sets firstMasteryAt and appends a first_mastery milestone the first time a word reaches Stable', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeStableWord(E, 'charlie');
+  assert.equal(E.WordModel.computeMastery(w), 'Stable');
+  E.WordModel.checkFirstMastery(w);
+  assert.ok(w.firstMasteryAt);
+  const entries = E.Storage.state.milestones.filter(m => m.type === 'first_mastery' && m.wordId === w.id);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].detail, 'Stable');
+});
+
+test('WordModel.checkFirstMastery: set-once -- a word that wobbles Stable -> Unstable -> Stable keeps its ORIGINAL firstMasteryAt and does not append a second milestone', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeStableWord(E, 'delta');
+  E.WordModel.checkFirstMastery(w);
+  const originalAt = w.firstMasteryAt;
+  assert.ok(originalAt);
+
+  // Wobble down to Unstable: recent failures in the last-5 window.
+  w.history.push({ ts: 10, date: '2026-03-06', level: 2, correct: false });
+  w.history.push({ ts: 11, date: '2026-03-07', level: 2, correct: false });
+  assert.equal(E.WordModel.computeMastery(w), 'Unstable');
+  E.WordModel.checkFirstMastery(w); // should no-op: firstMasteryAt already set
+  assert.equal(w.firstMasteryAt, originalAt);
+
+  // Wobble back up to Stable.
+  for (let i = 12; i < 17; i++) w.history.push({ ts: i, date: '2026-03-08', level: 2, correct: true });
+  assert.equal(E.WordModel.computeMastery(w), 'Stable');
+  E.WordModel.checkFirstMastery(w);
+  assert.equal(w.firstMasteryAt, originalAt, 'firstMasteryAt must stay at the ORIGINAL date, not update to the second Stable crossing');
+  const entries = E.Storage.state.milestones.filter(m => m.type === 'first_mastery' && m.wordId === w.id);
+  assert.equal(entries.length, 1, 'still only one first_mastery milestone for this word, despite two Stable crossings');
+});
+
+test('WordModel.checkFirstMastery: a word that never reaches Stable/Exam Ready is left alone (no firstMasteryAt, no milestone)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeWord(E, 'echo');
+  w.teaching.completed = true;
+  E.WordModel.checkFirstMastery(w);
+  assert.equal(w.firstMasteryAt, null);
+  assert.equal(E.Storage.state.milestones.filter(m => m.type === 'first_mastery').length, 0);
+});
+
+test('Achievements.evaluate: sets unlockedAt only the first time a threshold is crossed, and never overwrites it on later re-evaluations', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const ctxUnlocked = { taughtCount: 1, examReadyCount: 0, streak: 0, errorLogCount: 0, writingSessions: 0 };
+  E.Achievements.evaluate(ctxUnlocked);
+  assert.ok(E.Storage.state.achievements.first_word.unlockedAt);
+  const firstAt = E.Storage.state.achievements.first_word.unlockedAt;
+
+  E.Achievements.evaluate(ctxUnlocked); // re-evaluate with the same (still-unlocked) ctx
+  assert.equal(E.Storage.state.achievements.first_word.unlockedAt, firstAt, 'must not refresh the timestamp on re-evaluation');
+});
+
+test('Achievements.evaluate: a still-locked achievement gets no entry at all', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const ctxAllLocked = { taughtCount: 0, examReadyCount: 0, streak: 0, errorLogCount: 0, writingSessions: 0 };
+  E.Achievements.evaluate(ctxAllLocked);
+  assert.equal(E.Storage.state.achievements.first_word, undefined);
+});
+
+test('ErrorIntegration.recordProductionSuccess bumps dailyActivity reviews+correct for today (a graded attempt outside Practice.handleGraded)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeWord(E, 'foxtrot');
+  const today = E.Utils.todayISO();
+  E.ErrorIntegration.recordProductionSuccess(w, 'timed-exam');
+  assert.equal(E.Storage.state.dailyActivity[today].reviews, 1);
+  assert.equal(E.Storage.state.dailyActivity[today].correct, 1);
+});
+
+test('ErrorIntegration.recordProductionError bumps dailyActivity reviews (not correct) for today', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeWord(E, 'golf');
+  const today = E.Utils.todayISO();
+  E.ErrorIntegration.recordProductionError(w, 'Meaning', 'timed-exam');
+  assert.equal(E.Storage.state.dailyActivity[today].reviews, 1);
+  assert.equal(E.Storage.state.dailyActivity[today].correct, 0);
 });
