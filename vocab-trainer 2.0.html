@@ -536,19 +536,6 @@ const CATEGORY_TO_DIM = {
   Grammar:'grammar', Collocation:'collocation', Register:'contextualComprehension', Selection:'semanticDiscrimination'
 };
 
-// Phase 5 micro-fix: which dim(s) a given Practice question type actually tests, so a fail
-// logged against an unrelated dim (via CATEGORY_TO_DIM) doesn't downgrade that unrelated dim's
-// already-Achieved status. Mirrors Practice.recordDimForQuestion's success-side mapping by hand
-// (kept separate rather than refactored, to keep this fix isolated) -- if recordDimForQuestion's
-// dim choices change, update this alongside it.
-const QUESTION_TYPE_TO_DIMS = {
-  recognition: ['meaningRecognition'],
-  cued: ['meaningRecall', 'formRecall'],
-  cloze: ['contextualComprehension'],
-  drill: ['novelApplication'],
-  production: ['independentProduction']
-};
-
 const DIMENSIONS = [
   {key:'formRecognition', label:'Form Recognition'},
   {key:'formRecall', label:'Form Recall (Spelling)'},
@@ -605,13 +592,12 @@ function repairDims(raw){
   return d;
 }
 const DimModel = {
-  // `testedDims` (optional): the dim(s) the current question/step was actually testing
-  // (see QUESTION_TYPE_TO_DIMS). Phase 5 micro-fix: success/fail counts are untouched either
-  // way -- only whether an already-Achieved status gets downgraded changes. A fail against
-  // dimKey only downgrades an Achieved status if dimKey is among testedDims (or testedDims
-  // wasn't provided at all, preserving the original always-downgrade behavior for callers
-  // that don't pass it -- Teaching steps and ErrorIntegration are unchanged).
-  record(word, dimKey, success, testedDims){
+  // Every caller now writes to a dim it's directly responsible for -- Practice by exercised
+  // question type (Views.recordDimForQuestion), Teaching/ErrorIntegration by error category
+  // (WordModel.logError) -- so a fail against dimKey always reflects a real test of dimKey.
+  // The old testedDims-gated "unrelated fail shouldn't downgrade Achieved" guard is gone
+  // along with the double-write it was compensating for (see logError/recordDimForQuestion).
+  record(word, dimKey, success){
     const d = word.dims && word.dims[dimKey];
     if(!d) return;
     if(success){
@@ -625,8 +611,7 @@ const DimModel = {
       if(d.status==='Achieved' && !d.everAchievedAt) d.everAchievedAt = Date.now();
     } else {
       d.fail++;
-      const unrelated = d.status==='Achieved' && Array.isArray(testedDims) && !testedDims.includes(dimKey);
-      if(!unrelated) d.status = 'Developing';
+      d.status = 'Developing';
     }
   }
 };
@@ -902,6 +887,14 @@ const Storage = {
 
       // No local in-progress session to lose -- adopt the incoming one rather than dropping it.
       if(!this.state.practiceSession && incoming.practiceSession) this.state.practiceSession = incoming.practiceSession;
+
+      // TODO: dailyActivity is not merged here -- incoming.dailyActivity is silently dropped.
+      // Unlike the arrays above, it's not a clean append: each date bucket is either a
+      // canonical value (backfillDailyActivity's one-time reconstruction from word.history) or
+      // an accumulation of live DailyActivity.bump writes since, and there's no way from the
+      // merged data alone to tell which side's bucket for a given date is the more complete
+      // one, or to add two buckets without risking double-counting overlapping history. Needs
+      // its own reconciliation pass, not a bug fix folded into this one.
     }
     this.save();
     return true;
@@ -1077,17 +1070,21 @@ const WordModel = {
     // do it post-grade with the rating in hand -- bumping them here too would double-count.
     if(entry.phase==='teaching') DailyActivity.bump(entry.date, { teaching: 1 });
 
-    // Phase F: attempts[] mirrors history but normalized for cross-track comparison. level is
-    // nulled for teaching (history keeps level:0 -- deliberate asymmetry, there's no real
-    // "level" during teaching, 0 is just a placeholder history has always used). phase can be
-    // overridden via meta.attemptsPhase without touching history's own phase field (used by
-    // ErrorIntegration to collapse writing-audit sources into 'writing'/'timed-exam'). track
-    // defaults to null for callers that don't pass one (teaching has no track concept).
+    // Phase F: attempts[] mirrors history but normalized for cross-track comparison. phase can
+    // be overridden via meta.attemptsPhase without touching history's own phase field (used by
+    // ErrorIntegration to collapse writing-audit sources into 'writing'/'timed-exam', and by
+    // Practice to fill in 'practice' since Practice history entries carry no phase at all).
+    // level is nulled for teaching, derived from the resolved phase (not entry.phase directly)
+    // so a caller that passes attemptsPhase without also setting entry.phase still nulls level
+    // correctly. History keeps level:0 for teaching -- deliberate asymmetry, there's no real
+    // "level" during teaching, 0 is just a placeholder history has always used. track defaults
+    // to null for callers that don't pass one (teaching has no track concept).
+    const resolvedPhase = attemptsPhase!==undefined ? attemptsPhase : (entry.phase || null);
     Storage.state.attempts.push({
       ts, wordId: word.id,
-      level: entry.phase==='teaching' ? null : level,
+      level: resolvedPhase==='teaching' ? null : level,
       correct,
-      phase: attemptsPhase!==undefined ? attemptsPhase : (entry.phase || null),
+      phase: resolvedPhase,
       track: track!==undefined ? track : null,
       hinted: !!entry.hinted,
       errorCategory: entry.errorCategory || null
@@ -1095,11 +1092,17 @@ const WordModel = {
     if(Storage.state.attempts.length>ATTEMPTS_LOG_CAP) Storage.state.attempts = Storage.state.attempts.slice(-ATTEMPTS_LOG_CAP);
   },
 
-  logError(word, category, level, testedDims){
+  // opts.skipDimRecord: Practice already writes dims by exercised question type
+  // (Views.recordDimForQuestion) -- without this, a Practice miss double-counted the
+  // failure, once here via CATEGORY_TO_DIM and once via recordDimForQuestion. Teaching
+  // and ErrorIntegration have no question-type dim write of their own, so they still
+  // rely on this category-to-dim write and leave opts unset.
+  logError(word, category, level, opts){
     word.errorCounts[category] = (word.errorCounts[category]||0)+1;
     Storage.state.errorLog.push({ ts: Date.now(), date: Utils.todayISO(), wordId: word.id, word: word.word, category, level });
+    if(opts && opts.skipDimRecord) return;
     const dimKey = CATEGORY_TO_DIM[category];
-    if(dimKey) DimModel.record(word, dimKey, false, testedDims);
+    if(dimKey) DimModel.record(word, dimKey, false);
   },
 
   updateLadder(word, level, correct){
@@ -2476,7 +2479,7 @@ const Views = {
     // corrected on try 2 logged only a single {correct:true}, biasing accuracy upward on every
     // hinted item. Log the failed first attempt through the same path as everything else so it
     // lands in both history and attempts[] before the hint is shown.
-    WordModel.logAttempt(q.word, q.level, false, { hinted:false, track: q.track||'legacy' });
+    WordModel.logAttempt(q.word, q.level, false, { hinted:false, track: q.track||'legacy', attemptsPhase:'practice' });
     const answer = q.correctAnswer;
     const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
     answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
@@ -2561,8 +2564,12 @@ const Views = {
         // Shared ts for this graded event -- threaded into logAttempt (history + attempts[])
         // and gradeFsrs (FSRSScheduler.grade + the fsrsReviewLog entry) so all three line up.
         const ts = Date.now();
-        WordModel.logAttempt(word, question.level, false, { ts, rating:'again', errorCategory: chosenCat, hinted: !!s.hintUsed, track: question.track||'legacy' });
-        WordModel.logError(word, chosenCat, question.level, QUESTION_TYPE_TO_DIMS[question.type]);
+        WordModel.logAttempt(word, question.level, false, { ts, rating:'again', errorCategory: chosenCat, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice' });
+        // skipDimRecord: Practice writes dims by exercised question type (recordDimForQuestion
+        // below), not by error category -- without this, logError's own CATEGORY_TO_DIM write
+        // double-counted the failure (e.g. a cued+Spelling miss used to write both
+        // formRecall.fail and meaningRecall.fail for one event).
+        WordModel.logError(word, chosenCat, question.level, { skipDimRecord: true });
         this.recordDimForQuestion(question, false);
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, 'again', ts);
@@ -2581,7 +2588,7 @@ const Views = {
     } else {
       const finish = (rating)=>{
         const ts = Date.now();
-        WordModel.logAttempt(word, question.level, true, { ts, rating, hinted: !!s.hintUsed, track: question.track||'legacy' });
+        WordModel.logAttempt(word, question.level, true, { ts, rating, hinted: !!hintWasUsed, track: question.track||'legacy', attemptsPhase:'practice' });
         if(question.track==='fsrs'){
           Practice.gradeFsrs(word, question.dimension, rating, ts);
         } else {
