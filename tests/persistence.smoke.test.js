@@ -216,6 +216,31 @@ test('Practice.buildDueQueue surfaces a brand-new word\'s meaningRecall item imm
 
 /* ---- Phase 4: exam-date awareness ---- */
 
+// Test-only helper: Practice.gradeFsrs (product code, unchanged) always calls `new Date()`
+// itself at call time to get "now" -- it has no way to accept an injected clock. A test that
+// separately computes an expected "natural" FSRS result using its own fixed `now` can only match
+// gradeFsrs's real output if both use the exact same instant down to the millisecond (FSRS's
+// `due` is `now + scheduled_days`, so any drift between the two `now`s leaks straight into `due`).
+// This freezes the sandbox's own `Date` (a separate realm from the test file's host Date, since
+// gradeFsrs runs as vm-sandboxed code) so its zero-arg `new Date()` returns a fixed instant;
+// `new Date(x)` with explicit arguments is left working normally, since other code (e.g.
+// `new Date(examDate + 'T23:59:59.999')`) still needs that. Returns a restore function.
+function freezeSandboxDate(ctx, fixedMs) {
+  const install = new vm.Script(
+    '(function(fixedMs){' +
+    '  const RealDate = Date;' +
+    '  class FrozenDate extends RealDate {' +
+    '    constructor(...args){ super(...(args.length ? args : [fixedMs])); }' +
+    '    static now(){ return fixedMs; }' +
+    '  }' +
+    '  Date = FrozenDate;' +
+    '  return function restore(){ Date = RealDate; };' +
+    '})',
+    { filename: 'freeze-sandbox-date.js' }
+  ).runInContext(ctx);
+  return install(fixedMs);
+}
+
 function makeExamReadyEligibleWord(E) {
   const word = E.WordModel.create({
     word: 'sedulous', meaning: 'diligent', form: 'adjective', grammar: '', collocations: ['a', 'b'],
@@ -267,10 +292,11 @@ test('computeMastery: an FSRS dimension due past the exam downgrades Exam Ready 
 });
 
 test('Practice.gradeFsrs evaluates the "already Exam Ready?" gate AFTER writing this review\'s grade, not before', () => {
-  const { exports: E } = buildSandbox();
+  const { exports: E, ctx } = buildSandbox();
   E.Storage.load();
   const word = makeExamReadyEligibleWord(E);
-  const now = new Date();
+  const fixedMs = Date.UTC(2026, 0, 1); // arbitrary fixed instant -- see freezeSandboxDate
+  const now = new Date(fixedMs);
 
   // Build a Relearning-state production card the same way FSRS itself would produce one.
   const afterEasy = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
@@ -288,12 +314,21 @@ test('Practice.gradeFsrs evaluates the "already Exam Ready?" gate AFTER writing 
   // fsrs.umd.js's own elapsed_days computation), but if gradeFsrs's exam-ready gate incorrectly
   // read word.fsrs.production BEFORE writing this review's result, it would still see this
   // far-future due (and the Relearning state) and wrongly conclude "not ready" -> compress.
-  relearningCard.due = new Date(Date.now() + 200 * 86400000).toISOString();
+  relearningCard.due = new Date(fixedMs + 200 * 86400000).toISOString();
   word.fsrs.production = relearningCard;
   E.Storage.state.settings.examDate = examDate;
   E.Storage.state.words.push(word);
 
-  E.Practice.gradeFsrs(word, 'production', 'easy');
+  // gradeFsrs calls `new Date()` itself (it can't take an injected clock -- that's product
+  // code, left untouched). Freeze the sandbox's clock to the exact instant `natural` was
+  // computed with, so the two computations are deterministically comparable down to the
+  // millisecond instead of racing real wall-clock time (see freezeSandboxDate).
+  const restoreDate = freezeSandboxDate(ctx, fixedMs);
+  try {
+    E.Practice.gradeFsrs(word, 'production', 'easy');
+  } finally {
+    restoreDate();
+  }
 
   const logEntry = E.Storage.state.fsrsReviewLog[E.Storage.state.fsrsReviewLog.length - 1];
   assert.ok(!logEntry.examCompressed, 'the word became ready by virtue of THIS review, so the post-write gate should see it as ready and skip compression');
@@ -323,19 +358,27 @@ test('Practice.gradeFsrs compresses a due date past the exam, and logs the compr
 });
 
 test('Practice.gradeFsrs never compresses when no exam date is set -- identical to pre-Phase-4 behavior', () => {
-  const { exports: E } = buildSandbox();
+  const { exports: E, ctx } = buildSandbox();
   E.Storage.load();
   const word = makeExamReadyEligibleWord(E);
-  const now = new Date();
+  const fixedMs = Date.UTC(2026, 0, 1);
+  const now = new Date(fixedMs);
   const reviewed = FSRSScheduler.grade(FSRSScheduler.freshCard(now), 'easy', { now }).card;
-  reviewed.due = new Date(Date.now() + 90 * 86400000).toISOString();
+  reviewed.due = new Date(fixedMs + 90 * 86400000).toISOString();
   reviewed.stability = 60;
   word.fsrs.meaningRecall = reviewed;
   E.Storage.state.settings.examDate = null;
   E.Storage.state.words.push(word);
 
   const naturalResult = FSRSScheduler.grade(reviewed, 'easy', { now });
-  E.Practice.gradeFsrs(word, 'meaningRecall', 'easy');
+  // Same wall-clock race as the "AFTER writing this review's grade" test above -- gradeFsrs
+  // calls `new Date()` itself, so freeze the sandbox's clock to match `now` (see freezeSandboxDate).
+  const restoreDate = freezeSandboxDate(ctx, fixedMs);
+  try {
+    E.Practice.gradeFsrs(word, 'meaningRecall', 'easy');
+  } finally {
+    restoreDate();
+  }
 
   const logEntry = E.Storage.state.fsrsReviewLog[E.Storage.state.fsrsReviewLog.length - 1];
   assert.ok(!logEntry.examCompressed);
