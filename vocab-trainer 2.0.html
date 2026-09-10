@@ -802,7 +802,7 @@ const DailyActivity = {
   // callers are responsible for calling it exactly once per real event (see the call
   // sites listed in the Phase C commit/report).
   bump(date, deltas){
-    if(!date || !deltas) return;
+    if(!date || !deltas || !Storage.state) return;
     if(!Storage.state.dailyActivity[date]){
       Storage.state.dailyActivity[date] = { reviews:0, correct:0, teaching:0, newWords:0 };
     }
@@ -875,6 +875,11 @@ const WordModel = {
       teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }
     };
     if(isFirstEver) Milestones.append('first_word', { wordId: word.id });
+    // Phase D closeout: bump newWords here too, not only via Session.finish's log.newAdded --
+    // the backfill counts one newWords unit per word.created date, so a word added outside
+    // an active session (e.g. via the Add Word tab) needs the same live bump, or it'd only
+    // ever be reflected retroactively after the next full backfill (which never re-runs).
+    DailyActivity.bump(word.created, { newWords: 1 });
     return word;
   },
 
@@ -938,8 +943,16 @@ const WordModel = {
   },
 
   logAttempt(word, level, correct, meta){
-    word.history.push(Object.assign({ ts: Date.now(), date: Utils.todayISO(), level, correct }, meta||{}));
+    const entry = Object.assign({ ts: Date.now(), date: Utils.todayISO(), level, correct }, meta||{});
+    word.history.push(entry);
     if(word.history.length>200) word.history = word.history.slice(-200);
+    // Phase D closeout: `teaching` is "teaching-step attempts" (matches how the backfill
+    // counts it -- one per history entry with phase==='teaching'), bumped once here so
+    // every one of the Teaching module's several call sites is covered without touching
+    // each of them individually. Non-teaching reviews/correct are bumped at their own call
+    // sites (Practice.handleGraded, ErrorIntegration) instead of here, since those already
+    // do it post-grade with the rating in hand -- bumping them here too would double-count.
+    if(entry.phase==='teaching') DailyActivity.bump(entry.date, { teaching: 1 });
   },
 
   logError(word, category, level, testedDims){
@@ -3398,16 +3411,13 @@ const Session = {
 
   finish(){
     this.active = false;
-    // Phase C: NOT bumping DailyActivity.reviews/correct from this.log here -- every item
-    // in this.log.reviewed/correct/errors already went through Practice.handleGraded during
-    // the session (this.log is built from the same `results` that handleGraded pushed to
-    // s.results, see finishPhase), which already bumped `reviews`/`correct` per attempt.
-    // Re-bumping from the session-level aggregate here would double-count every one of
-    // those attempts. newAdded is the one counter here with no other live-bump source
-    // (WordModel.create only appends the first_word milestone, it doesn't bump
-    // dailyActivity.newWords going forward -- see the Phase C report), so that's the only
-    // piece of this.log this function contributes.
-    if(this.log.newAdded) DailyActivity.bump(Utils.todayISO(), { newWords: this.log.newAdded });
+    // Phase C/D: NOT bumping DailyActivity from this.log at all here. reviews/correct are
+    // already covered per-attempt by Practice.handleGraded during the session (this.log is
+    // built from the same `results` that handleGraded pushed to s.results, see finishPhase).
+    // newAdded used to be bumped here (Phase C), but Phase D moved that bump into
+    // WordModel.create itself so words added OUTSIDE a session count too -- since every
+    // word added during a session also goes through WordModel.create, re-bumping newWords
+    // from this.log here now would double-count it.
     Achievements.evaluate(Analytics.buildAchievementContext());
     Storage.state.sessionLog.push({ ts: Date.now(), date: Utils.todayISO(), summary: Object.assign({}, this.log) });
     Storage.save();
