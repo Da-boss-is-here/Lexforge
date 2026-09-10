@@ -3347,6 +3347,13 @@ function computeArmComparison(words, attempts){
     // FSRS values against per-word legacy values would compare different units, so FSRS is
     // collapsed to a per-word mean across its *active* dimensions (reps>0 -- "hasn't started"
     // isn't a scheduled interval) first.
+    // "Has at least one tracked attempt in this arm," not "currently scheduled by this
+    // arm" -- word.srs.interval reflects the last legacy applyRating call, which may be
+    // older than the word's most recent FSRS activity. Both arms run concurrently per
+    // word (mergeQueues), so this is the state as of the last legacy grade, which is the
+    // closest available proxy for "what the legacy scheduler currently thinks this word's
+    // interval is." The FSRS side uses the same semantic (at least one attempt) plus a
+    // redundant reps>0 guard per dimension.
     if(tracked.some(a=>a.track==='legacy')){
       legacyIntervalSum += w.srs.interval||0;
       legacyIntervalN++;
@@ -3368,7 +3375,11 @@ function computeArmComparison(words, attempts){
     // firstMasteryAt (imported/repaired state, see repairWord) has no boundary to count
     // against and is excluded from this metric specifically, even though it still counts
     // toward the interval metrics above.
-    if(WordModel.computeMastery(w)==='Stable' && typeof w.firstMasteryAt==='number'){
+    // Stable OR Exam Ready -- firstMasteryAt is stamped on either transition
+    // (checkFirstMastery accepts both), and Exam Ready is reached *through* Stable, so
+    // excluding it here would drop exactly the words that mastered hardest.
+    const m = WordModel.computeMastery(w);
+    if((m==='Stable' || m==='Exam Ready') && typeof w.firstMasteryAt==='number'){
       const upToStable = attempts.filter(a=>a.wordId===w.id && a.ts<=w.firstMasteryAt);
       if(upToStable.length>0){
         stableWordN++;
@@ -3632,8 +3643,8 @@ const Analytics = {
 
     const rts = cmp.reviewsToStable;
     const headline = rts.n>0
-      ? '<div class="achv-stats-grid"><div class="stat good"><div class="num">'+rts.mean.toFixed(1)+'</div><div class="label">Mean Attempts to Stable ('+rts.n+' word'+(rts.n===1?'':'s')+')</div></div></div>'
-      : '<p class="field-hint">Not enough data yet — no word has both reached Stable and logged attempts[] entries before doing so.</p>';
+      ? '<div class="achv-stats-grid"><div class="stat good"><div class="num">'+rts.mean.toFixed(1)+'</div><div class="label">Mean Attempts to First Mastery ('+rts.n+' word'+(rts.n===1?'':'s')+')</div></div></div>'
+      : '<p class="field-hint">Not enough data yet — no word has both reached Stable-or-better and logged attempts[] entries before doing so.</p>';
     const rtsBreakdown = rts.n>0
       ? '<p class="field-hint">Of that, legacy-tracked ≈'+rts.legacyMean.toFixed(1)+', FSRS-tracked ≈'+rts.fsrsMean.toFixed(1)+', untracked (teaching/writing/exam) ≈'+rts.otherMean.toFixed(1)+' — descriptive only. There is no model here that attributes a word\'s progress to one arm vs. the other within a single word, so this breakdown is not a per-arm outcome.</p>'
       : '';
