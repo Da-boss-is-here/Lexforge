@@ -50,7 +50,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -562,4 +562,201 @@ test('full-session count is tracked separately from the broadened streak', () =>
 
   const html = E.Analytics.renderAchievementsSection();
   assert.match(html, /1<\/div><div class="label">Full Sessions/);
+});
+
+/* ---- Analytics Phase B: Learning Health pure aggregations over state.fsrsReviewLog ---- */
+
+function reviewEntry(overrides) {
+  return Object.assign({
+    ts: Date.now(), wordId: 'w1', dimension: 'recognition', rating: 'good',
+    predictedR: 0.8, outcome: true, stabilityBefore: 1, stabilityAfter: 2,
+    difficultyBefore: 5, difficultyAfter: 5, elapsedDays: 1, scheduledDays: 3
+  }, overrides || {});
+}
+
+test('computeCalibration: empty log returns all 4 buckets with n=0 and actual=null', () => {
+  const { exports: E } = buildSandbox();
+  const buckets = E.computeCalibration([]);
+  assert.equal(buckets.length, 4);
+  buckets.forEach(b => { assert.equal(b.n, 0); assert.equal(b.actual, null); });
+});
+
+test('computeCalibration: all-same-prediction log lands entirely in one bucket with the right actual rate', () => {
+  const { exports: E } = buildSandbox();
+  const log = [
+    reviewEntry({ predictedR: 0.8, outcome: true }),
+    reviewEntry({ predictedR: 0.8, outcome: true }),
+    reviewEntry({ predictedR: 0.8, outcome: false }),
+    reviewEntry({ predictedR: 0.8, outcome: true })
+  ];
+  const buckets = E.computeCalibration(log);
+  const bucket79 = buckets.find(b => b.label === '0.7–0.9');
+  assert.equal(bucket79.n, 4);
+  assert.equal(bucket79.actual, 0.75);
+  buckets.filter(b => b.label !== '0.7–0.9').forEach(b => assert.equal(b.n, 0));
+});
+
+test('computeCalibration: predictedR===1 lands in the top bucket, not dropped', () => {
+  const { exports: E } = buildSandbox();
+  const buckets = E.computeCalibration([reviewEntry({ predictedR: 1, outcome: true })]);
+  const top = buckets.find(b => b.label === '0.9–1.0');
+  assert.equal(top.n, 1);
+});
+
+test('computeBrier: empty log returns { value:null, n:0 } rather than NaN', () => {
+  const { exports: E } = buildSandbox();
+  const emptyBrier = E.computeBrier([]);
+  assert.equal(emptyBrier.value, null);
+  assert.equal(emptyBrier.n, 0);
+});
+
+test('computeBrier: an all-correct log scores (1-predictedR)^2 averaged, not 0', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ predictedR: 0.6, outcome: true }), reviewEntry({ predictedR: 0.9, outcome: true })];
+  const result = E.computeBrier(log);
+  const expected = ((0.6 - 1) ** 2 + (0.9 - 1) ** 2) / 2;
+  assert.ok(Math.abs(result.value - expected) < 1e-9);
+  assert.equal(result.n, 2);
+});
+
+test('computeBrier: an all-wrong log scores predictedR^2 averaged', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ predictedR: 0.6, outcome: false }), reviewEntry({ predictedR: 0.9, outcome: false })];
+  const result = E.computeBrier(log);
+  const expected = (0.6 ** 2 + 0.9 ** 2) / 2;
+  assert.ok(Math.abs(result.value - expected) < 1e-9);
+});
+
+test('computeBrier: entries missing predictedR/outcome are excluded rather than poisoning the mean with NaN', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ predictedR: 0.5, outcome: true }), { ts: Date.now(), wordId: 'w2', dimension: 'recognition' }];
+  const result = E.computeBrier(log);
+  assert.equal(result.n, 1);
+  assert.ok(!Number.isNaN(result.value));
+});
+
+test('computeStabilityGrowth: a dimension with exactly 1 data point still returns that 1 point (hiding is the render layer\'s job, not this function\'s)', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ dimension: 'production', wordId: 'w1', stabilityAfter: 3 })];
+  const growth = E.computeStabilityGrowth(log);
+  assert.equal(growth.production.length, 1);
+  assert.equal(growth.production[0].n, 1);
+  assert.equal(growth.production[0].median, 3);
+});
+
+test('computeStabilityGrowth: median (not mean) across words at the same review index resists one runaway outlier', () => {
+  const { exports: E } = buildSandbox();
+  const t0 = Date.now();
+  const log = [
+    reviewEntry({ wordId: 'w1', dimension: 'recognition', stabilityAfter: 5, ts: t0 }),
+    reviewEntry({ wordId: 'w2', dimension: 'recognition', stabilityAfter: 6, ts: t0 + 1 }),
+    reviewEntry({ wordId: 'w3', dimension: 'recognition', stabilityAfter: 1000, ts: t0 + 2 }) // outlier
+  ];
+  const growth = E.computeStabilityGrowth(log);
+  assert.equal(growth.recognition[0].n, 3);
+  assert.equal(growth.recognition[0].median, 6, 'median of [5,6,1000] is 6, not skewed by the outlier');
+});
+
+test('computeStabilityGrowth: orders each word\'s own reviews by ts to build its index, independent of push order', () => {
+  const { exports: E } = buildSandbox();
+  const t0 = Date.now();
+  // Pushed out of chronological order -- function must sort by ts per word before indexing.
+  const log = [
+    reviewEntry({ wordId: 'w1', dimension: 'recognition', stabilityAfter: 20, ts: t0 + 10 }),
+    reviewEntry({ wordId: 'w1', dimension: 'recognition', stabilityAfter: 10, ts: t0 })
+  ];
+  const growth = E.computeStabilityGrowth(log);
+  assert.equal(growth.recognition[0].median, 10, 'first review by ts should be index 1');
+  assert.equal(growth.recognition[1].median, 20, 'second review by ts should be index 2');
+});
+
+test('computeRetentionByInterval: empty log returns all 6 buckets with n=0 and rate=null', () => {
+  const { exports: E } = buildSandbox();
+  const buckets = E.computeRetentionByInterval([]);
+  assert.equal(buckets.length, 6);
+  buckets.forEach(b => { assert.equal(b.n, 0); assert.equal(b.rate, null); });
+});
+
+test('computeRetentionByInterval: bucket boundaries are half-open (elapsedDays exactly 1 goes to the 1-3d bucket, not 0-1d)', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ elapsedDays: 1, outcome: true }), reviewEntry({ elapsedDays: 30, outcome: true })];
+  const buckets = E.computeRetentionByInterval(log);
+  assert.equal(buckets.find(b => b.label === '0–1d').n, 0);
+  assert.equal(buckets.find(b => b.label === '1–3d').n, 1);
+  assert.equal(buckets.find(b => b.label === '14–30d').n, 0);
+  assert.equal(buckets.find(b => b.label === '30d+').n, 1);
+});
+
+test('computeRetentionByInterval: an all-wrong bucket reports rate 0, distinct from a no-data bucket reporting null', () => {
+  const { exports: E } = buildSandbox();
+  const log = [reviewEntry({ elapsedDays: 0.5, outcome: false }), reviewEntry({ elapsedDays: 0.5, outcome: false })];
+  const buckets = E.computeRetentionByInterval(log);
+  const bucket01 = buckets.find(b => b.label === '0–1d');
+  assert.equal(bucket01.rate, 0);
+  assert.equal(bucket01.n, 2);
+  const bucket13 = buckets.find(b => b.label === '1–3d');
+  assert.equal(bucket13.rate, null);
+});
+
+test('computeFirstPostTeachingRetention: empty word list returns n=0, y=0, rate=null (tile should hide, not show 0%)', () => {
+  const { exports: E } = buildSandbox();
+  const empty = E.computeFirstPostTeachingRetention([]);
+  assert.equal(empty.n, 0);
+  assert.equal(empty.y, 0);
+  assert.equal(empty.rate, null);
+});
+
+test('computeFirstPostTeachingRetention: a word with teaching completed but no non-teaching attempt yet is excluded from the denominator', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'golf');
+  w.teaching.completed = true;
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 0, correct: true, phase: 'teaching' });
+  const result = E.computeFirstPostTeachingRetention([w]);
+  assert.equal(result.n, 0);
+  assert.equal(result.y, 0);
+  assert.equal(result.rate, null);
+});
+
+test('computeFirstPostTeachingRetention: a word not taught at all is excluded even with non-teaching history', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'hotel');
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 2, correct: true });
+  const result = E.computeFirstPostTeachingRetention([w]);
+  assert.equal(result.n, 0);
+  assert.equal(result.y, 0);
+  assert.equal(result.rate, null);
+});
+
+test('computeFirstPostTeachingRetention: uses the FIRST non-teaching attempt, not the most recent, for correctness', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'india');
+  w.teaching.completed = true;
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 0, correct: true, phase: 'teaching' });
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 2, correct: false }); // first non-teaching attempt: wrong
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 2, correct: true });  // later attempt: right, must not count
+  const result = E.computeFirstPostTeachingRetention([w]);
+  assert.equal(result.n, 0);
+  assert.equal(result.y, 1);
+  assert.equal(result.rate, 0);
+});
+
+test('computeFirstPostTeachingRetention: mixed set of words produces the right n/y/rate', () => {
+  const { exports: E } = buildSandbox();
+  const success = makeWord(E, 'juliet');
+  success.teaching.completed = true;
+  success.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 0, correct: true, phase: 'teaching' });
+  success.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 2, correct: true });
+
+  const failure = makeWord(E, 'kilo');
+  failure.teaching.completed = true;
+  failure.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 0, correct: true, phase: 'teaching' });
+  failure.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 2, correct: false });
+
+  const notYetPracticed = makeWord(E, 'lima');
+  notYetPracticed.teaching.completed = true;
+
+  const result = E.computeFirstPostTeachingRetention([success, failure, notYetPracticed]);
+  assert.equal(result.n, 1);
+  assert.equal(result.y, 2);
+  assert.equal(result.rate, 0.5);
 });

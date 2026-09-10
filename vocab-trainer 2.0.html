@@ -298,6 +298,8 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 .chart-card h3{margin:0 0 4px;font-family:var(--serif);font-size:15.5px;font-weight:650;text-transform:none;letter-spacing:-0.005em;}
 .chart-card .chart-sub{font-family:var(--mono);font-size:11px;font-weight:500;text-transform:none;letter-spacing:0;color:var(--text-dim);margin-bottom:12px;}
 .chart-wrap{position:relative;height:240px;}
+.lh-section-title{margin:22px 0 12px;font-family:var(--serif);font-size:17px;font-weight:700;letter-spacing:-0.01em;}
+.lh-placeholder{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--text-dim);font-family:var(--mono);font-size:12.5px;padding:0 16px;}
 .achv-stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px;}
 .achv-scroll{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;}
 .achv-card{flex:0 0 auto;width:132px;background:var(--bg-elev-2);border-radius:var(--radius-sm);padding:15px 11px;text-align:center;border:1px solid var(--border);transition:border-color .15s var(--ease);}
@@ -2629,6 +2631,110 @@ const Exam = {
   }
 };
 
+/* ============================== LEARNING HEALTH (pure aggregations) ==============================
+   Five pure functions over state.fsrsReviewLog / state.words -- no DOM, no Chart.js -- so the
+   Learning Health charts are testable headlessly. Chart-rendering code below calls these and
+   only handles presentation (bucket labels on axes, hiding thin lines, "not enough data" gates). */
+
+const CALIBRATION_BUCKETS = [
+  { label:'0.0–0.5', min:0, max:0.5 },
+  { label:'0.5–0.7', min:0.5, max:0.7 },
+  { label:'0.7–0.9', min:0.7, max:0.9 },
+  { label:'0.9–1.0', min:0.9, max:1.0001 } // +epsilon so predictedR===1 lands in the last bucket
+];
+
+const RETENTION_INTERVAL_BUCKETS = [
+  { label:'0–1d', min:0, max:1 },
+  { label:'1–3d', min:1, max:3 },
+  { label:'3–7d', min:3, max:7 },
+  { label:'7–14d', min:7, max:14 },
+  { label:'14–30d', min:14, max:30 },
+  { label:'30d+', min:30, max:Infinity }
+];
+
+function validReviewEntries(log){
+  return (log||[]).filter(e=>e && typeof e.predictedR==='number' && isFinite(e.predictedR) && typeof e.outcome==='boolean');
+}
+
+// Buckets reviews by predictedR into 4 calibration bins; y is the actual (observed) success
+// rate per bin, for plotting against the y=x diagonal. n is carried per bucket so a bucket
+// built from 3 reviews can be styled/tooltipped differently than one built from 300.
+function computeCalibration(log){
+  const entries = validReviewEntries(log);
+  return CALIBRATION_BUCKETS.map(b=>{
+    const inBucket = entries.filter(e=>e.predictedR>=b.min && e.predictedR<b.max);
+    const n = inBucket.length;
+    const actual = n ? inBucket.reduce((sum,e)=>sum+(e.outcome?1:0),0)/n : null;
+    return { label:b.label, min:b.min, max:b.max, n, actual };
+  });
+}
+
+// Brier score: mean((predictedR - outcome)^2) over all reviews with a usable prediction.
+// Lower is better (0 = perfect calibration, 1 = worst possible on a 0/1 outcome).
+function computeBrier(log){
+  const entries = validReviewEntries(log);
+  if(entries.length===0) return { value:null, n:0 };
+  const sum = entries.reduce((s,e)=>{ const o = e.outcome?1:0; return s+(e.predictedR-o)*(e.predictedR-o); }, 0);
+  return { value: sum/entries.length, n: entries.length };
+}
+
+// Per dimension, orders each word's reviews chronologically and takes the median stabilityAfter
+// across words at each review-index (1st review, 2nd review, ...) -- median rather than mean so
+// one runaway-stability word doesn't drag the curve. Returns every index with data; the caller
+// decides whether a dimension has enough points to draw (< 5 points -> hide the line entirely).
+function computeStabilityGrowth(log){
+  const dims = (typeof FSRSScheduler!=='undefined' && FSRSScheduler.DIMENSIONS) ? FSRSScheduler.DIMENSIONS : ['recognition','production','meaningRecall'];
+  const result = {};
+  dims.forEach(dim=>{
+    const byWord = {};
+    (log||[]).forEach(e=>{
+      if(!e || e.dimension!==dim || typeof e.stabilityAfter!=='number' || !isFinite(e.stabilityAfter)) return;
+      (byWord[e.wordId] = byWord[e.wordId]||[]).push(e);
+    });
+    Object.keys(byWord).forEach(wordId=>byWord[wordId].sort((a,b)=>a.ts-b.ts));
+    const maxLen = Object.values(byWord).reduce((m,arr)=>Math.max(m,arr.length),0);
+    const points = [];
+    for(let i=0;i<maxLen;i++){
+      const atIndex = Object.values(byWord).filter(arr=>arr.length>i).map(arr=>arr[i].stabilityAfter);
+      if(atIndex.length===0) continue;
+      const sorted = atIndex.slice().sort((a,b)=>a-b);
+      const mid = Math.floor(sorted.length/2);
+      const median = sorted.length%2 ? sorted[mid] : (sorted[mid-1]+sorted[mid])/2;
+      points.push({ index:i+1, n:atIndex.length, median });
+    }
+    result[dim] = points;
+  });
+  return result;
+}
+
+// Buckets reviews by elapsedDays (time since last review) into fixed intervals; y is the
+// observed success rate per bucket, n carried alongside for the same reason as calibration.
+function computeRetentionByInterval(log){
+  const entries = (log||[]).filter(e=>e && typeof e.elapsedDays==='number' && isFinite(e.elapsedDays) && typeof e.outcome==='boolean');
+  return RETENTION_INTERVAL_BUCKETS.map(b=>{
+    const inBucket = entries.filter(e=>e.elapsedDays>=b.min && e.elapsedDays<b.max);
+    const n = inBucket.length;
+    const rate = n ? inBucket.reduce((sum,e)=>sum+(e.outcome?1:0),0)/n : null;
+    return { label:b.label, min:b.min, max:b.max, n, rate };
+  });
+}
+
+// Of words that completed teaching, what fraction succeeded on their first non-teaching
+// (retrieval) attempt? A word only enters the denominator once it actually HAS a non-teaching
+// history entry -- a taught word that hasn't been retrieval-practiced yet doesn't count as
+// either a success or a failure.
+function computeFirstPostTeachingRetention(words){
+  let y = 0, n = 0;
+  (words||[]).forEach(w=>{
+    if(!w || !w.teaching || !w.teaching.completed) return;
+    const first = (w.history||[]).find(h=>h && h.phase!=='teaching');
+    if(!first) return;
+    y++;
+    if(first.correct) n++;
+  });
+  return { n, y, rate: y ? n/y : null };
+}
+
 /* ============================== ANALYTICS ============================== */
 const Analytics = {
   charts: {},
@@ -2659,7 +2765,11 @@ const Analytics = {
     let html = this.renderAchievementsSection();
 
     if(words.length===0){
-      html += '<div class="card empty-state"><div class="big">📊</div><h2>No chart data yet</h2><p>Add and practice some words to unlock the analytics charts.</p></div>';
+      // The achievements block above (renderAchievementsSection) already renders every
+      // locked card at 0/target using the same progress-bar markup regardless of word
+      // count, so this empty state doesn't need its own achievement preview -- it just
+      // needs to stop dead-ending and point at what adding a word actually unlocks.
+      html += '<div class="card empty-state"><div class="big">📊</div><h2>No chart data yet</h2><p>Your achievement progress above is already tracking. Add and practice your first word to unlock <strong>Words Added Over Time</strong> -- the first analytics chart -- plus mastery, review-load, and dimension charts.</p></div>';
       el.innerHTML = html;
       return;
     }
@@ -2670,6 +2780,36 @@ const Analytics = {
       '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
       '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged failures by mastery dimension</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
       '</div>';
+
+    // Learning Health -- Tier-1 rigor charts read straight off state.fsrsReviewLog via the
+    // pure compute* functions above. All three charts share one data gate (< 20 logged
+    // reviews total): below that, a raw Brier score or per-bucket rate would look far more
+    // authoritative than a sample that small actually supports, so the card shows a
+    // placeholder instead of a chart. Existing four charts above are untouched/unmoved.
+    const reviewLog = Storage.state.fsrsReviewLog || [];
+    const hasEnoughReviewData = reviewLog.length >= 20;
+    const brier = computeBrier(reviewLog);
+    const fptr = computeFirstPostTeachingRetention(words);
+    const lhPlaceholder = '<div class="chart-wrap lh-placeholder">Not enough data yet ('+reviewLog.length+'/20)</div>';
+
+    html += '<h2 class="lh-section-title">📈 Learning Health</h2>' +
+      '<div class="analytics-grid">' +
+      '<div class="chart-card"><h3>Prediction Calibration</h3>' +
+        (hasEnoughReviewData
+          ? '<div class="chart-sub">Brier score '+brier.value.toFixed(3)+' (lower is better, n='+brier.n+')</div><div class="chart-wrap"><canvas id="chartCalibration"></canvas></div>'
+          : '<div class="chart-sub">Predicted vs. actual recall probability</div>'+lhPlaceholder) +
+        '</div>' +
+      '<div class="chart-card"><h3>Stability Growth by Dimension</h3><div class="chart-sub">Median stability per review index, by FSRS dimension</div>' +
+        (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartStabilityGrowth"></canvas></div>' : lhPlaceholder) +
+        '</div>' +
+      '<div class="chart-card"><h3>Retention by Interval</h3><div class="chart-sub">Success rate vs. days since last review</div>' +
+        (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartRetentionInterval"></canvas></div>' : lhPlaceholder) +
+        '</div>' +
+      '</div>' +
+      (fptr.y>0
+        ? '<div class="card"><div class="achv-stats-grid"><div class="stat good"><div class="num">'+Math.round(fptr.rate*100)+'%</div><div class="label">First-Post-Teaching Retention ('+fptr.n+'/'+fptr.y+' words)</div></div></div></div>'
+        : '');
+
     el.innerHTML = html;
 
     const css = getComputedStyle(document.documentElement);
@@ -2692,6 +2832,12 @@ const Analytics = {
     this.renderMasteryChart(theme);
     this.renderForecastChart(theme);
     this.renderErrorChart(theme);
+
+    if(hasEnoughReviewData){
+      this.renderCalibrationChart(theme, reviewLog);
+      this.renderStabilityGrowthChart(theme, reviewLog);
+      this.renderRetentionIntervalChart(theme, reviewLog);
+    }
   },
 
   destroyCharts(){
@@ -2875,6 +3021,96 @@ const Analytics = {
         indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, title: { display: false } },
         scales: { x: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }, y: { grid: { display: false }, border: { display: false } } }
+      }
+    });
+  },
+
+  LH_DIM_LABELS: { recognition:'Recognition', production:'Production', meaningRecall:'Meaning Recall' },
+  LH_DIM_COLORS(theme){ return { recognition: theme.accent, production: theme.good, meaningRecall: theme.highlight }; },
+
+  renderCalibrationChart(theme, log){
+    const calibration = computeCalibration(log);
+    const points = calibration.filter(b=>b.n>0).map(b=>({ x: Math.min((b.min+b.max)/2, 1), y: b.actual, n: b.n, label: b.label }));
+    this.charts.calibration = new Chart(document.getElementById('chartCalibration'), {
+      data: {
+        datasets: [
+          { type:'scatter', label:'Buckets', data: points, backgroundColor: theme.accent, pointRadius: 6, pointHoverRadius: 7 },
+          { type:'line', label:'Perfect calibration (y=x)', data: [{x:0,y:0},{x:1,y:1}], borderColor: theme.grid, borderDash:[4,4], borderWidth:1.5, pointRadius:0, fill:false }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => {
+            const d = ctx.raw;
+            return d && d.label ? (d.label+' predicted: '+Math.round(d.y*100)+'% actual (n='+d.n+')') : 'Perfect calibration';
+          } } }
+        },
+        scales: {
+          x: { min:0, max:1, title: { display:true, text:'Predicted R' }, grid: { color: theme.grid }, border: { display:false } },
+          y: { min:0, max:1, title: { display:true, text:'Actual success rate' }, grid: { color: theme.grid }, border: { display:false } }
+        }
+      }
+    });
+  },
+
+  renderStabilityGrowthChart(theme, log){
+    const growth = computeStabilityGrowth(log);
+    const colors = this.LH_DIM_COLORS(theme);
+    // A dimension's line is hidden entirely below 5 points -- a 1- or 2-point "line" is
+    // just noise, not a trend.
+    const dims = Object.keys(growth).filter(d=>growth[d].length>=5);
+    const maxLen = dims.reduce((m,d)=>Math.max(m, growth[d].length), 0);
+    const labels = Array.from({length:maxLen}, (_,i)=>'#'+(i+1));
+    this.charts.stabilityGrowth = new Chart(document.getElementById('chartStabilityGrowth'), {
+      type: 'line',
+      data: {
+        labels,
+        datasets: dims.map(d=>({
+          label: this.LH_DIM_LABELS[d]||d,
+          data: growth[d].map(p=>p.median),
+          borderColor: colors[d]||theme.accent,
+          backgroundColor: 'transparent',
+          borderWidth: 2, tension: .3, pointRadius: 2, pointBackgroundColor: colors[d]||theme.accent
+        }))
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: dims.length>0, position: 'bottom', labels: { boxWidth: 8, usePointStyle: true, pointStyle: 'circle', font: { size: 11 }, padding: 12 } },
+          tooltip: { callbacks: { label: ctx => {
+            const d = dims[ctx.datasetIndex];
+            const p = growth[d][ctx.dataIndex];
+            return (this.LH_DIM_LABELS[d]||d)+': '+p.median.toFixed(2)+' (n='+p.n+')';
+          } } }
+        },
+        scales: {
+          x: { grid: { display:false }, border: { display:false }, title: { display:true, text:'Review # within dimension' } },
+          y: { grid: { color: theme.grid }, border: { display:false }, beginAtZero:true, title: { display:true, text:'Median stability (days)' } }
+        }
+      }
+    });
+  },
+
+  renderRetentionIntervalChart(theme, log){
+    const buckets = computeRetentionByInterval(log);
+    this.charts.retentionInterval = new Chart(document.getElementById('chartRetentionInterval'), {
+      type: 'bar',
+      data: { labels: buckets.map(b=>b.label), datasets: [{ label:'Retention', data: buckets.map(b=>b.rate===null?0:Math.round(b.rate*100)), backgroundColor: theme.accent, borderRadius: 6, barThickness: 22 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: ctx => {
+            const b = buckets[ctx.dataIndex];
+            return b.n ? (Math.round(b.rate*100)+'% (n='+b.n+')') : 'no data';
+          } } }
+        },
+        scales: {
+          x: { grid: { display:false }, border: { display:false } },
+          y: { grid: { color: theme.grid }, border: { display:false }, beginAtZero:true, max:100, ticks: { callback:v=>v+'%' } }
+        }
       }
     });
   }
