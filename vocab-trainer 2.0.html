@@ -346,6 +346,24 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 .pb-row:last-child{border-bottom:none;}
 .pb-row .pb-label{font-size:13px;color:var(--text-dim);}
 .pb-row .pb-value{font-family:var(--serif);font-weight:650;font-size:14.5px;}
+
+/* ---- Phase E: Retention Gaps ---- */
+.rg-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--border);gap:10px;}
+.rg-row:last-child{border-bottom:none;}
+.rg-row .rg-label{font-size:13px;}
+.rg-row .rg-value{font-family:var(--mono);font-size:12px;color:var(--bad);font-weight:600;white-space:nowrap;}
+
+/* ---- Phase E: coverage table ---- */
+.coverage-table-wrap{overflow-x:auto;}
+.coverage-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.coverage-table th,.coverage-table td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;}
+.coverage-table th{font-family:var(--mono);font-size:10.5px;font-weight:600;color:var(--text-dim);cursor:pointer;user-select:none;}
+.coverage-table th:hover{color:var(--text);}
+.coverage-table th.sorted::after{content:' ▾';font-size:9px;}
+.coverage-table th.sorted.asc::after{content:' ▴';}
+.coverage-table td.num{font-family:var(--mono);}
+.coverage-table tbody tr:hover{background:var(--bg-elev-2);}
+.coverage-table .practice-cell-btn{font-family:var(--mono);font-size:10.5px;padding:4px 10px;}
 .streak-banner{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:16px;font-weight:650;}
 .streak-banner .flame{font-size:24px;}
 
@@ -545,6 +563,14 @@ const DIMENSIONS = [
   {key:'novelApplication', label:'Novel Application'}
 ];
 const DIM_KEYS = DIMENSIONS.map(d=>d.key);
+// Phase E: which retrieval level exercises each dimension, for the coverage table's
+// Practice button (reuses the existing legacy-track queue shape, no new question types).
+const DIM_PRACTICE_LEVEL = {
+  formRecognition: 1, meaningRecognition: 1,
+  formRecall: 2, meaningRecall: 2, semanticDiscrimination: 2,
+  grammar: 3, collocation: 3, contextualComprehension: 3,
+  guidedProduction: 4, independentProduction: 4, novelApplication: 4
+};
 
 const WORD_TYPES = [
   {key:'general', label:'General / mixed'},
@@ -557,7 +583,7 @@ const WORD_TYPES = [
 
 function freshDims(){
   const d = {};
-  DIM_KEYS.forEach(k=>{ d[k] = { status:'Not assessed', success:0, fail:0 }; });
+  DIM_KEYS.forEach(k=>{ d[k] = { status:'Not assessed', success:0, fail:0, everAchievedAt:null }; });
   return d;
 }
 function repairDims(raw){
@@ -568,6 +594,11 @@ function repairDims(raw){
         d[k].status = ['Not assessed','Developing','Achieved'].includes(raw[k].status) ? raw[k].status : 'Not assessed';
         d[k].success = Number(raw[k].success)||0;
         d[k].fail = Number(raw[k].fail)||0;
+        // Phase E: never backfilled, same principle as word.firstMasteryAt in Phase C --
+        // a dim already 'Achieved' in a pre-Phase-E save has no way to know WHEN that
+        // happened, so it starts null (see DimModel.record for where it gets stamped going
+        // forward) rather than fabricating a date from repair time.
+        d[k].everAchievedAt = typeof raw[k].everAchievedAt==='number' ? raw[k].everAchievedAt : null;
       }
     });
   }
@@ -586,6 +617,12 @@ const DimModel = {
     if(success){
       d.success++;
       d.status = d.success>=2 ? 'Achieved' : 'Developing';
+      // Phase E: set once, the first time this dim reaches 'Achieved' -- guarded on
+      // everAchievedAt itself (not on "just transitioned"), so a dim imported already at
+      // 'Achieved' with no stamp (see repairDims) gets one on its next success rather than
+      // never, while a dim that wobbles Achieved -> Developing -> Achieved again (still
+      // gated by `!d.everAchievedAt`) never overwrites the original date.
+      if(d.status==='Achieved' && !d.everAchievedAt) d.everAchievedAt = Date.now();
     } else {
       d.fail++;
       const unrelated = d.status==='Achieved' && Array.isArray(testedDims) && !testedDims.includes(dimKey);
@@ -1118,7 +1155,15 @@ const WordModel = {
   },
 
   resetDim(word, dimKey){
-    if(word.dims && word.dims[dimKey]) word.dims[dimKey] = { status:'Not assessed', success:0, fail:0 };
+    if(!word.dims || !word.dims[dimKey]) return;
+    // Phase E: everAchievedAt is a historical "ever" marker (like word.firstMasteryAt),
+    // not a mirror of current status -- preserved across a reset. Without this, a word
+    // whose independentProduction/novelApplication gets reset by
+    // ErrorIntegration.recordProductionError after a production error would silently drop
+    // out of the Retention Gaps lapse-rate denominator (matured), even though "achieved,
+    // then reset by a real error" is exactly the lapse this metric exists to surface.
+    const everAchievedAt = word.dims[dimKey].everAchievedAt || null;
+    word.dims[dimKey] = { status:'Not assessed', success:0, fail:0, everAchievedAt };
   }
 };
 
@@ -2151,6 +2196,23 @@ const Views = {
     this.renderPracticeCard();
   },
 
+  // Phase E: the coverage table's per-dimension Practice button. Builds a legacy-track
+  // queue directly (same {track:'legacy', word, level} shape buildDueQueue's
+  // category-drilling branch produces) over words that have actually failed this
+  // dimension at least once, at the retrieval level that exercises it (DIM_PRACTICE_LEVEL).
+  // The render side disables the button when this set is empty; this guard is just defense
+  // in depth against routing into a 0-item session some other way.
+  runDimensionPractice(dimKey){
+    const level = DIM_PRACTICE_LEVEL[dimKey] || 2;
+    const words = Storage.state.words.filter(w=>w.dims && w.dims[dimKey] && w.dims[dimKey].fail>0);
+    if(words.length===0){ Utils.toast('No words have failed this dimension yet.'); return; }
+    const queue = words.map(w=>({ track:'legacy', word:w, level }));
+    Practice.session = { queue, idx:0, results:[], mode:'free' };
+    Practice.persist();
+    App.showTab('practice');
+    this.renderPracticeCard();
+  },
+
   runProductionDrills(){
     const queue = Practice.buildProductionQueue(8);
     if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
@@ -3052,10 +3114,69 @@ function relativeDate(ts, nowMs){
   const y=Math.floor(days/365); return y+(y===1?' year ago':' years ago');
 }
 
+/* ============================== PHASE E: RETENTION GAPS + COVERAGE TABLE (pure) ============== */
+
+// Per dimension: lapsed = words that once reached 'Achieved' (everAchievedAt set) but
+// aren't 'Achieved' right now; matured = words that ever reached 'Achieved' at all;
+// rate = lapsed/matured, or null when matured is 0 (nothing to compute a rate over --
+// the caller hides that dimension's row rather than dividing by zero).
+function computeLapseRates(words){
+  return DIMENSIONS.map(dim=>{
+    let lapsed = 0, matured = 0;
+    (words||[]).forEach(w=>{
+      const d = w && w.dims && w.dims[dim.key];
+      if(!d || !d.everAchievedAt) return;
+      matured++;
+      if(d.status!=='Achieved') lapsed++;
+    });
+    return { key: dim.key, label: dim.label, lapsed, matured, rate: matured ? lapsed/matured : null };
+  });
+}
+
+// Total logged failures per dimension -- this is exactly what the Phase B "Weakest
+// Vocabulary Dimensions" bar chart plotted (renderErrorChart), just extracted into a named,
+// testable function per Phase E's instruction to keep the data available even though the
+// chart itself is replaced by the coverage table below. (It wasn't a separately named
+// function before Phase E -- Phase B inlined this reduce directly inside renderErrorChart.)
+function computeFailuresByDimension(words){
+  return DIMENSIONS.map(dim=>({
+    key: dim.key, label: dim.label,
+    fails: (words||[]).reduce((sum,w)=>sum+((w.dims && w.dims[dim.key] && w.dims[dim.key].fail)||0), 0)
+  }));
+}
+
+// One row per dimension, straight off word.dims[k] -- "words assessed" is the count of
+// words with any status beyond 'Not assessed' for that dim, and %Achieved/%Developing are
+// percentages OF that assessed count (not of all words), since a dimension nobody has been
+// tested on yet can't honestly report a success rate. hasFailures is exposed for the
+// caller's Practice-button enable/disable check.
+function computeDimensionCoverage(words){
+  return DIMENSIONS.map(dim=>{
+    let assessed=0, achieved=0, developing=0, fails=0, hasFailures=false;
+    (words||[]).forEach(w=>{
+      const d = w && w.dims && w.dims[dim.key];
+      if(!d) return;
+      fails += d.fail||0;
+      if((d.fail||0)>0) hasFailures = true;
+      if(d.status==='Not assessed') return;
+      assessed++;
+      if(d.status==='Achieved') achieved++;
+      else if(d.status==='Developing') developing++;
+    });
+    return {
+      key: dim.key, label: dim.label, assessed,
+      pctAchieved: assessed ? Math.round(achieved/assessed*100) : 0,
+      pctDeveloping: assessed ? Math.round(developing/assessed*100) : 0,
+      fails, hasFailures
+    };
+  });
+}
+
 /* ============================== ANALYTICS ============================== */
 const Analytics = {
   charts: {},
   _milestonesExpanded: false, // transient UI toggle, not persisted
+  _coverageSort: { key:'label', dir:'asc' }, // transient UI state, not persisted
 
   MILESTONE_META: {
     first_word: { icon:'📖', text: ()=>'Started your vocabulary journey' },
@@ -3109,7 +3230,7 @@ const Analytics = {
       '<div class="chart-card"><h3>Words Added vs. Learned Over Time</h3><div class="chart-sub">Cumulative added vs. cumulative reached Stable+</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
       '<div class="chart-card"><h3>Current Mastery Distribution</h3><div class="chart-sub">Across '+words.length+' word(s)</div><div class="chart-wrap"><canvas id="chartMastery"></canvas></div></div>' +
       '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
-      '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged failures by mastery dimension</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
+      this.renderCoverageTable() +
       '</div>';
 
     // Learning Health -- Tier-1 rigor charts read straight off state.fsrsReviewLog via the
@@ -3138,6 +3259,7 @@ const Analytics = {
         (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartRetentionInterval"></canvas></div>' : lhPlaceholder) +
         '</div>' +
       this.renderHeatmapCard() +
+      this.renderRetentionGapsCard() +
       '</div>' +
       (fptr.y>0
         ? '<div class="card"><div class="achv-stats-grid"><div class="stat good"><div class="num">'+Math.round(fptr.rate*100)+'%</div><div class="label">First-Post-Teaching Retention ('+fptr.n+'/'+fptr.y+' words)</div></div></div></div>'
@@ -3165,7 +3287,10 @@ const Analytics = {
     this.renderProgressChart(theme);
     this.renderMasteryChart(theme);
     this.renderForecastChart(theme);
-    this.renderErrorChart(theme);
+    // renderErrorChart (Phase B's "Weakest Vocabulary Dimensions" bar chart) is no longer
+    // called -- Phase E replaced its card slot above with the Dimension Coverage table.
+    // Left defined, and its data (computeFailuresByDimension) is still available, per
+    // instruction: "keep the data available, just stop rendering it."
 
     if(hasEnoughReviewData){
       this.renderCalibrationChart(theme, reviewLog);
@@ -3182,6 +3307,19 @@ const Analytics = {
   wireSectionToggles(el){
     const btn = el.querySelector('#milestoneToggleBtn');
     if(btn) btn.addEventListener('click', ()=>{ this._milestonesExpanded = !this._milestonesExpanded; this.render(); });
+
+    el.querySelectorAll('.coverage-table th[data-sort-key]').forEach(th=>{
+      th.addEventListener('click', ()=>{
+        const key = th.dataset.sortKey;
+        if(this._coverageSort.key===key) this._coverageSort.dir = this._coverageSort.dir==='asc' ? 'desc' : 'asc';
+        else { this._coverageSort.key = key; this._coverageSort.dir = 'asc'; }
+        this.render();
+      });
+    });
+    el.querySelectorAll('.practice-cell-btn').forEach(pbtn=>{
+      if(pbtn.disabled) return;
+      pbtn.addEventListener('click', ()=>Views.runDimensionPractice(pbtn.dataset.dim));
+    });
   },
 
   renderThisWeekSection(){
@@ -3264,6 +3402,59 @@ const Analytics = {
     return '<div class="chart-card"><h3>Consistency</h3><div class="chart-sub">Last '+HEATMAP_DAYS+' days — reviews per day</div>' +
       '<div class="heatmap-scroll"><div class="heatmap-grid">'+cellsHtml+'</div></div>' +
       '<div class="heatmap-legend">Less <div class="heatmap-cell level-0"></div><div class="heatmap-cell level-1"></div><div class="heatmap-cell level-2"></div><div class="heatmap-cell level-3"></div> More</div>' +
+      '</div>';
+  },
+
+  // "Did mastery stick?" -- hidden entirely if nothing has ever reached 'Achieved' on any
+  // dimension (rows.length===0 covers that case directly: with no matured>0 dimension,
+  // there's nothing to build a row from), and rows with rate===0 (matured but never
+  // lapsed) are omitted too rather than padding the card with "0 of N slipped back" noise.
+  renderRetentionGapsCard(){
+    const rows = computeLapseRates(Storage.state.words||[])
+      .filter(r=>r.matured>0 && r.rate>0)
+      .sort((a,b)=>b.rate-a.rate);
+    if(rows.length===0) return '';
+    return '<div class="chart-card"><h3>Retention Gaps</h3><div class="chart-sub">Dimensions that slipped back after being Achieved</div>' +
+      rows.map(r=>'<div class="rg-row"><span class="rg-label">'+Utils.escapeHtml(r.label)+'</span><span class="rg-value">'+r.lapsed+' of '+r.matured+' slipped back — '+Math.round(r.rate*100)+'%</span></div>').join('') +
+      '</div>';
+  },
+
+  renderCoverageTable(){
+    const words = Storage.state.words || [];
+    const rows = computeDimensionCoverage(words);
+    const sort = this._coverageSort;
+    const sorted = rows.slice().sort((a,b)=>{
+      let av=a[sort.key], bv=b[sort.key];
+      if(typeof av==='string'){ av=av.toLowerCase(); bv=bv.toLowerCase(); }
+      const cmp = av<bv ? -1 : av>bv ? 1 : 0;
+      return sort.dir==='asc' ? cmp : -cmp;
+    });
+    const cols = [
+      { key:'label', label:'Dimension' },
+      { key:'assessed', label:'Words Assessed' },
+      { key:'pctAchieved', label:'% Achieved' },
+      { key:'pctDeveloping', label:'% Developing' },
+      { key:'fails', label:'Fails' }
+    ];
+    const headerHtml = cols.map(c=>{
+      const isSorted = sort.key===c.key;
+      return '<th class="'+(isSorted?'sorted '+sort.dir:'')+'" data-sort-key="'+c.key+'">'+c.label+'</th>';
+    }).join('') + '<th>Practice</th>';
+    const rowsHtml = sorted.map(r=>{
+      const disabled = !r.hasFailures;
+      return '<tr>' +
+        '<td>'+Utils.escapeHtml(r.label)+'</td>' +
+        '<td class="num">'+r.assessed+'</td>' +
+        '<td class="num">'+r.pctAchieved+'%</td>' +
+        '<td class="num">'+r.pctDeveloping+'%</td>' +
+        '<td class="num">'+r.fails+'</td>' +
+        '<td><button class="btn ghost small practice-cell-btn" data-dim="'+r.key+'"'+
+          (disabled ? ' disabled title="No words have failed this dimension yet"' : ' title="Practice words that failed this dimension"') +
+          '>Practice</button></td>' +
+        '</tr>';
+    }).join('');
+    return '<div class="chart-card"><h3>Dimension Coverage</h3><div class="chart-sub">Click a column to sort · 11 mastery dimensions</div>' +
+      '<div class="coverage-table-wrap"><table class="coverage-table"><thead><tr>'+headerHtml+'</tr></thead><tbody>'+rowsHtml+'</tbody></table></div>' +
       '</div>';
   },
 
@@ -3442,12 +3633,14 @@ const Analytics = {
     });
   },
 
+  // Kept but no longer called from render() (Phase E) -- see the "Weakest Vocabulary
+  // Dimensions" note where its call used to be. Data source is computeFailuresByDimension,
+  // the named pure function Phase E extracted so this stays available/testable.
   renderErrorChart(theme){
-    const words = Storage.state.words;
-    const totals = DIMENSIONS.map(d=>words.reduce((sum,w)=>sum+((w.dims&&w.dims[d.key]&&w.dims[d.key].fail)||0), 0));
+    const failures = computeFailuresByDimension(Storage.state.words);
     this.charts.errors = new Chart(document.getElementById('chartErrors'), {
       type: 'bar',
-      data: { labels: DIMENSIONS.map(d=>d.label), datasets: [{ label: 'Failures', data: totals, backgroundColor: theme.accent, borderRadius: 6, barThickness: 16 }] },
+      data: { labels: failures.map(f=>f.label), datasets: [{ label: 'Failures', data: failures.map(f=>f.fails), backgroundColor: theme.accent, borderRadius: 6, barThickness: 16 }] },
       options: {
         // Horizontal, like the forecast chart -- 11 dimension labels (some multi-word,
         // e.g. "Contextual Comprehension") don't fit as rotated x-axis ticks the way the

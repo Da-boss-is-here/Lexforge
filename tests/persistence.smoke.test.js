@@ -38,11 +38,22 @@ function buildSandbox() {
   const sandbox = {
     console,
     localStorage: new FakeLocalStorage(),
-    document: { addEventListener() {}, getElementById() { return null; }, querySelectorAll() { return []; }, createElement() { return { style: {}, classList: { add(){}, remove(){} } }; } },
+    // getElementById returns a harmless fake element (not null) so DOM-touching routing
+    // code -- e.g. App.showTab, called by Views.runDimensionPractice (Phase E) -- doesn't
+    // throw when a test exercises it; existing tests never called anything that touches
+    // getElementById's result, so this is purely additive.
+    document: {
+      addEventListener() {}, getElementById() { return { classList: { add(){}, remove(){}, toggle(){} }, innerHTML: '', style: {}, querySelector(){ return null; }, querySelectorAll(){ return []; }, appendChild(){}, remove(){} }; },
+      querySelectorAll() { return []; }, createElement() { return { style: {}, classList: { add(){}, remove(){} }, remove(){}, appendChild(){} }; }
+    },
     window: undefined,
     navigator: { languages: ['en-US'] },
     FSRSScheduler,
-    DueQueue
+    DueQueue,
+    // Fake timers: Utils.toast schedules a removal via setTimeout, but tests don't care
+    // whether/when that fires -- a no-op avoids both a real multi-second wait and an
+    // uncaught exception from the callback running after the test (and its fake DOM) is gone.
+    setTimeout(){ return 0; }, clearTimeout(){}
   };
   sandbox.window = sandbox;
   const ctx = vm.createContext(sandbox);
@@ -50,7 +61,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -1101,4 +1112,141 @@ test('Analytics.renderMilestoneWall: orders milestones most-recent-first regardl
   assert.ok(idxRomeo > -1 && idxSierra > -1 && idxQuebec > -1);
   assert.ok(idxRomeo < idxSierra, 'romeo (newest) should render before sierra (middle)');
   assert.ok(idxSierra < idxQuebec, 'sierra (middle) should render before quebec (oldest)');
+});
+
+/* ---- Analytics Phase E: everAchievedAt, lapse rate, coverage table, Practice routing ---- */
+
+test('DimModel.record: sets dims[k].everAchievedAt the first time a dim reaches Achieved', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'tango');
+  assert.equal(w.dims.grammar.everAchievedAt, null, 'sanity: freshDims starts null');
+  E.DimModel.record(w, 'grammar', true); // success 1 -> Developing
+  assert.equal(w.dims.grammar.status, 'Developing');
+  assert.equal(w.dims.grammar.everAchievedAt, null, 'not Achieved yet, so not stamped yet');
+  E.DimModel.record(w, 'grammar', true); // success 2 -> Achieved
+  assert.equal(w.dims.grammar.status, 'Achieved');
+  assert.ok(w.dims.grammar.everAchievedAt, 'stamped the moment it first reaches Achieved');
+});
+
+test('DimModel.record: everAchievedAt is set-once -- a wobble Achieved -> Developing -> Achieved keeps the ORIGINAL timestamp', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'uniform');
+  E.DimModel.record(w, 'collocation', true);
+  E.DimModel.record(w, 'collocation', true); // -> Achieved
+  const originalAt = w.dims.collocation.everAchievedAt;
+  assert.ok(originalAt);
+
+  E.DimModel.record(w, 'collocation', false); // lapse -> Developing
+  assert.equal(w.dims.collocation.status, 'Developing');
+  assert.equal(w.dims.collocation.everAchievedAt, originalAt, 'a lapse must not clear the historical stamp');
+
+  E.DimModel.record(w, 'collocation', true);
+  E.DimModel.record(w, 'collocation', true); // success count already >=2 -> back to Achieved immediately
+  assert.equal(w.dims.collocation.status, 'Achieved');
+  assert.equal(w.dims.collocation.everAchievedAt, originalAt, 'must NOT update to the second Achieved crossing');
+});
+
+test('WordModel.resetDim preserves everAchievedAt across a reset (so ErrorIntegration-triggered lapses still count as matured)', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'victor');
+  E.DimModel.record(w, 'independentProduction', true);
+  E.DimModel.record(w, 'independentProduction', true);
+  const originalAt = w.dims.independentProduction.everAchievedAt;
+  assert.ok(originalAt);
+
+  E.WordModel.resetDim(w, 'independentProduction');
+  assert.equal(w.dims.independentProduction.status, 'Not assessed');
+  assert.equal(w.dims.independentProduction.success, 0);
+  assert.equal(w.dims.independentProduction.everAchievedAt, originalAt, 'everAchievedAt is historical, not a mirror of current status');
+});
+
+test('repairDims accepts a save missing everAchievedAt entirely (pre-Phase-E) without throwing, and defaults it to null even for an Achieved dim', () => {
+  const { exports: E } = buildSandbox();
+  const raw = { grammar: { status: 'Achieved', success: 4, fail: 0 } }; // no everAchievedAt key at all
+  const repaired = E.validateAndRepair({ version: 2, words: [{ id: 'w1', word: 'x', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '', contexts: [], production: '', cloze: [], created: '2025-01-01', srs: { interval: 1, nextReview: '2025-01-01', easeStreak: 0, lastPracticed: null }, levelState: { level: 2 }, history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general', teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }, dims: raw }], errorLog: [], settings: { examDate: null, theme: 'system' }, sessionLog: [], writingLog: [], examLog: [], practiceSession: null });
+  assert.equal(repaired.words[0].dims.grammar.status, 'Achieved', 'status itself is preserved');
+  assert.equal(repaired.words[0].dims.grammar.everAchievedAt, null, 'not backfilled -- starts null per Phase C\'s firstMasteryAt precedent');
+});
+
+test('computeLapseRates: a dimension with matured===0 reports rate=null, not a divide-by-zero', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'whiskey'); // freshDims, nothing ever Achieved
+  const rates = E.computeLapseRates([w]);
+  assert.equal(rates.length, 11);
+  rates.forEach(r => { assert.equal(r.matured, 0); assert.equal(r.rate, null); assert.equal(r.lapsed, 0); });
+});
+
+test('computeLapseRates: correctly separates a lapsed dim from one still Achieved and one never touched', () => {
+  const { exports: E } = buildSandbox();
+  const lapsedWord = makeWord(E, 'xray');
+  E.DimModel.record(lapsedWord, 'grammar', true); E.DimModel.record(lapsedWord, 'grammar', true);
+  E.DimModel.record(lapsedWord, 'grammar', false); // Achieved -> Developing, everAchievedAt stays set
+
+  const stillAchievedWord = makeWord(E, 'yankee');
+  E.DimModel.record(stillAchievedWord, 'grammar', true); E.DimModel.record(stillAchievedWord, 'grammar', true);
+
+  const untouchedWord = makeWord(E, 'zulu'); // dims.grammar never touched
+
+  const rates = E.computeLapseRates([lapsedWord, stillAchievedWord, untouchedWord]);
+  const grammar = rates.find(r => r.key === 'grammar');
+  assert.equal(grammar.matured, 2, 'only the two words that ever reached Achieved count as matured');
+  assert.equal(grammar.lapsed, 1, 'only the one currently not-Achieved-but-matured word counts as lapsed');
+  assert.equal(grammar.rate, 0.5);
+});
+
+test('computeDimensionCoverage: always returns exactly 11 rows, one per real mastery dimension', () => {
+  const { exports: E } = buildSandbox();
+  const rows = E.computeDimensionCoverage([]);
+  assert.equal(rows.length, 11);
+  const rowsPopulated = E.computeDimensionCoverage([makeWord(E, 'alfa'), makeWord(E, 'bravo')]);
+  assert.equal(rowsPopulated.length, 11);
+});
+
+test('computeDimensionCoverage: %Achieved/%Developing are percentages of ASSESSED words, not all words, and fails/hasFailures are correct', () => {
+  const { exports: E } = buildSandbox();
+  const achieved = makeWord(E, 'charlie');
+  E.DimModel.record(achieved, 'meaningRecall', true); E.DimModel.record(achieved, 'meaningRecall', true);
+  const developing = makeWord(E, 'delta');
+  E.DimModel.record(developing, 'meaningRecall', true);
+  const neverAssessed = makeWord(E, 'echo'); // dims.meaningRecall left at 'Not assessed'
+
+  const rows = E.computeDimensionCoverage([achieved, developing, neverAssessed]);
+  const mr = rows.find(r => r.key === 'meaningRecall');
+  assert.equal(mr.assessed, 2, 'the never-assessed word must not count in the denominator');
+  assert.equal(mr.pctAchieved, 50);
+  assert.equal(mr.pctDeveloping, 50);
+  assert.equal(mr.fails, 0);
+  assert.equal(mr.hasFailures, false);
+});
+
+test('Views.runDimensionPractice: builds a queue containing exactly the words that failed the seeded dimension, at the right level, and leaves other words out', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const failedGrammar = makeWord(E, 'foxtrot');
+  failedGrammar.dims.grammar.fail = 2;
+  const failedOtherDim = makeWord(E, 'golf');
+  failedOtherDim.dims.collocation.fail = 1; // grammar never failed for this word
+  const cleanWord = makeWord(E, 'hotel'); // no fails anywhere
+  [failedGrammar, failedOtherDim, cleanWord].forEach(w => E.Storage.state.words.push(w));
+
+  // The queue-building logic under test (the part before App.showTab) fully completes
+  // before this throws -- the test sandbox's fake DOM has no real querySelector, so the
+  // interactive practice-card rendering that showTab cascades into (building the actual
+  // question UI, well past routing) can't run headlessly here. That's fine: this test is
+  // about the queue Practice.session ends up with, not about rendering the card.
+  try { E.Views.runDimensionPractice('grammar'); } catch (e) {}
+  const queueWordIds = E.Practice.session.queue.map(item => item.word.id);
+  assert.equal(queueWordIds.length, 1, 'only the word that actually failed grammar should be queued');
+  assert.equal(queueWordIds[0], failedGrammar.id);
+  assert.equal(E.Practice.session.queue[0].level, E.DIM_PRACTICE_LEVEL.grammar);
+  assert.equal(E.Practice.session.queue[0].level, 3);
+  assert.equal(E.Practice.session.queue[0].track, 'legacy');
+});
+
+test('Views.runDimensionPractice: does not start a session when no word has failed the dimension', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.words.push(makeWord(E, 'india')); // no fails anywhere
+  E.Views.runDimensionPractice('novelApplication');
+  assert.equal(E.Practice.session, null, 'no words failed novelApplication, so no session should start');
 });
