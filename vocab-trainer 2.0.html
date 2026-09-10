@@ -697,6 +697,12 @@ function defaultState(){
     // phase, track, dimension, rating, hinted, errorCategory}
     attempts: [],
     practiceSession: null, // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
+    // In-progress Timed Exam, so a page refresh doesn't lose the prompt/writing/timer state --
+    // see Exam.persist/restore. Deliberately excludes 'done' (see Exam.persist's guard):
+    // that status's render depends on Exam.lastRecord, which isn't persisted, so a 'done' exam
+    // is cleared rather than saved. targetWordIds (not live word objects) are resolved back
+    // against Storage.state.words on restore, same as practiceSession's queue.
+    examSession: null, // {status, prompt, minutes, text, remainingSec, lastTickAt, targetWordIds, checklist}
     // Phase C groundwork for Phase D analytics -- infrastructure only, nothing reads these yet.
     dailyActivity: {}, // { 'YYYY-MM-DD': {reviews, correct, teaching, newWords} } -- see DailyActivity.bump / Storage.backfillDailyActivity
     achievements: {}, // { id: {unlockedAt: ts|null} } -- see Achievements.evaluate
@@ -728,6 +734,28 @@ function validateAndRepair(raw){
   if(Array.isArray(raw.attempts)) out.attempts = raw.attempts.filter(s=>s && s.ts).slice(-ATTEMPTS_LOG_CAP);
   if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
     out.practiceSession = raw.practiceSession;
+  }
+  // Shape-gated, same as practiceSession above -- accepted wholesale or not at all, no
+  // per-field repair. 'done' is deliberately not in the status whitelist (see examSession's
+  // comment in defaultState). checklist is validated as a plain object here; its own
+  // entries are validated per-id against Exam.targetWords in Exam.restore, same place
+  // practiceSession's word ids get re-resolved.
+  const es = raw.examSession;
+  if(es && typeof es==='object' &&
+     ['config','running','review'].includes(es.status) &&
+     typeof es.prompt==='string' &&
+     typeof es.minutes==='number' && es.minutes>0 &&
+     typeof es.text==='string' &&
+     typeof es.remainingSec==='number' && es.remainingSec>=0 &&
+     Array.isArray(es.targetWordIds) &&
+     es.checklist && typeof es.checklist==='object' && !Array.isArray(es.checklist)){
+    out.examSession = {
+      status: es.status, prompt: es.prompt, minutes: es.minutes, text: es.text,
+      remainingSec: es.remainingSec,
+      lastTickAt: typeof es.lastTickAt==='number' ? es.lastTickAt : null,
+      targetWordIds: es.targetWordIds.filter(id=>typeof id==='string'),
+      checklist: es.checklist
+    };
   }
   if(raw.dailyActivity && typeof raw.dailyActivity==='object' && !Array.isArray(raw.dailyActivity)){
     Object.keys(raw.dailyActivity).forEach(date=>{
@@ -873,6 +901,12 @@ const Storage = {
       // now-deleted words.
       this.state.practiceSession = null;
       Practice.session = null;
+      // Same reasoning as practiceSession/Practice.session just above: cleared after the
+      // swap so it's the swap's own examSession that's cleared, and Exam's in-memory state
+      // (targetWords holds live word object references too) is discarded rather than left
+      // pointing at now-deleted words.
+      this.state.examSession = null;
+      Exam.discard();
       this.backfillDailyActivity();
     } else {
       const existingIds = new Set(this.state.words.map(w=>w.id));
@@ -910,6 +944,11 @@ const Storage = {
 
       // No local in-progress session to lose -- adopt the incoming one rather than dropping it.
       if(!this.state.practiceSession && incoming.practiceSession) this.state.practiceSession = incoming.practiceSession;
+      // Same rule as practiceSession: only adopt the incoming exam when there's no local one
+      // to lose. Doesn't touch Exam's in-memory state -- Exam.restore() (called once at
+      // App.init) is what actually picks a freshly-adopted examSession up; a merge import
+      // happening after that point just updates what a future reload would restore.
+      if(!this.state.examSession && incoming.examSession) this.state.examSession = incoming.examSession;
 
       // TODO: dailyActivity is not merged here -- incoming.dailyActivity is silently dropped.
       // Unlike the arrays above, it's not a clean append: each date bucket is either a
@@ -1675,6 +1714,7 @@ const App = {
     Storage.load();
     this.applyTheme();
     Practice.restore();
+    Exam.restore();
     document.getElementById('tabs').addEventListener('click', (e)=>{
       const btn = e.target.closest('button[data-tab]');
       if(btn) this.showTab(btn.dataset.tab);
@@ -2320,11 +2360,12 @@ const Views = {
     });
     el.querySelector('#resetBtn').addEventListener('click', ()=>{
       Modal.confirm('Erase ALL data? This cannot be undone. Consider exporting a backup first.', ()=>{
-        // Practice.session holds live word object references from the state that's about to
-        // be discarded -- without clearing it, a practice session already open in another tab
-        // (or resumed via Practice.restore before this reload) would keep operating on
-        // now-deleted words.
-        Storage.state = defaultState(); Practice.session = null; Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
+        // Practice.session and Exam's in-memory state (targetWords) both hold live word
+        // object references from the state that's about to be discarded -- without clearing
+        // them, a practice session or exam already open in another tab (or resumed via
+        // Practice.restore/Exam.restore before this reload) would keep operating on
+        // now-deleted words. defaultState() already gives examSession/practiceSession: null.
+        Storage.state = defaultState(); Practice.session = null; Exam.discard(); Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
       });
     });
   },
@@ -2358,24 +2399,34 @@ const Views = {
   },
 
   runFreePractice(opts){
-    // Disown any abandoned Daily Session before building a fresh standalone one. Session.active
-    // is set in Session.start() and only cleared in Session.finish() -- a user who starts a
-    // Session and navigates away via the tab bar leaves active=true with phase wherever they
-    // left off, and nothing else reads or resets it. Completing this standalone practice would
-    // otherwise hit #doneBtn's wasActive branch and run finishPhase() against that abandoned
-    // Session instead of just returning to the dashboard. Same class of bug as #doneBtn's own
-    // wasActive fix: reading session state after a fresh flow has already mutated it.
-    Session.active = false;
-    opts = opts || {};
-    const queue = Practice.buildDueQueue(opts);
-    if(queue.length===0){
-      Utils.toast('Nothing to practice right now.');
-      App.showTab('dashboard');
-      return;
-    }
-    Practice.session = { queue, idx:0, results:[], mode:'free' };
-    Practice.persist();
-    this.renderPracticeCard();
+    // Confirm before overwriting a live Practice.session -- reachable via a single click from
+    // Dashboard's "Quick Review (Due Only)" while a different practice/production/dimension
+    // session is already in progress. Wraps the entire body, including the Session.active
+    // disown and the empty-queue early return, and runs before either -- cancelling must leave
+    // both the live session and (if one was abandoned) the Daily Session wrapper untouched.
+    const proceed = ()=>{
+      // Disown any abandoned Daily Session before building a fresh standalone one.
+      // Session.active is set in Session.start() and only cleared in Session.finish() -- a
+      // user who starts a Session and navigates away via the tab bar leaves active=true with
+      // phase wherever they left off, and nothing else reads or resets it. Completing this
+      // standalone practice would otherwise hit #doneBtn's wasActive branch and run
+      // finishPhase() against that abandoned Session instead of just returning to the
+      // dashboard. Same class of bug as #doneBtn's own wasActive fix: reading session state
+      // after a fresh flow has already mutated it.
+      Session.active = false;
+      opts = opts || {};
+      const queue = Practice.buildDueQueue(opts);
+      if(queue.length===0){
+        Utils.toast('Nothing to practice right now.');
+        App.showTab('dashboard');
+        return;
+      }
+      Practice.session = { queue, idx:0, results:[], mode:'free' };
+      Practice.persist();
+      this.renderPracticeCard();
+    };
+    if(Practice.session) Modal.confirm('You have a practice session in progress. Start this one instead and lose your progress on the current one?', proceed);
+    else proceed();
   },
 
   // Phase E: the coverage table's per-dimension Practice button. Builds a legacy-track
@@ -2385,26 +2436,36 @@ const Views = {
   // The render side disables the button when this set is empty; this guard is just defense
   // in depth against routing into a 0-item session some other way.
   runDimensionPractice(dimKey){
-    // See runFreePractice's comment -- same disown-on-entry fix.
-    Session.active = false;
-    const level = DIM_PRACTICE_LEVEL[dimKey] || 2;
-    const words = Storage.state.words.filter(w=>w.dims && w.dims[dimKey] && w.dims[dimKey].fail>0);
-    if(words.length===0){ Utils.toast('No words have failed this dimension yet.'); return; }
-    const queue = words.map(w=>({ track:'legacy', word:w, level }));
-    Practice.session = { queue, idx:0, results:[], mode:'free' };
-    Practice.persist();
-    App.showTab('practice');
-    this.renderPracticeCard();
+    // See runFreePractice's comment -- same confirm-before-overwrite and disown-on-entry
+    // fixes, in the same order (confirm wraps everything, including the disown and the
+    // empty-pool early return; disown itself only runs once the user has confirmed).
+    const proceed = ()=>{
+      Session.active = false;
+      const level = DIM_PRACTICE_LEVEL[dimKey] || 2;
+      const words = Storage.state.words.filter(w=>w.dims && w.dims[dimKey] && w.dims[dimKey].fail>0);
+      if(words.length===0){ Utils.toast('No words have failed this dimension yet.'); return; }
+      const queue = words.map(w=>({ track:'legacy', word:w, level }));
+      Practice.session = { queue, idx:0, results:[], mode:'free' };
+      Practice.persist();
+      App.showTab('practice');
+      this.renderPracticeCard();
+    };
+    if(Practice.session) Modal.confirm('You have a practice session in progress. Start this one instead and lose your progress on the current one?', proceed);
+    else proceed();
   },
 
   runProductionDrills(){
-    // See runFreePractice's comment -- same disown-on-entry fix.
-    Session.active = false;
-    const queue = Practice.buildProductionQueue(8);
-    if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
-    Practice.session = { queue, idx:0, results:[], mode:'production' };
-    Practice.persist();
-    this.renderPracticeCard();
+    // See runFreePractice's comment -- same confirm-before-overwrite and disown-on-entry fixes.
+    const proceed = ()=>{
+      Session.active = false;
+      const queue = Practice.buildProductionQueue(8);
+      if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
+      Practice.session = { queue, idx:0, results:[], mode:'production' };
+      Practice.persist();
+      this.renderPracticeCard();
+    };
+    if(Practice.session) Modal.confirm('You have a practice session in progress. Start this one instead and lose your progress on the current one?', proceed);
+    else proceed();
   },
 
   renderPracticeCard(){
@@ -2908,14 +2969,94 @@ const Exam = {
   checklist: {}, // wordId -> {outcome, category}
   lastRecord: null,
   container: null,
+  _tickCount: 0, // throttles tick()'s persist() to every 5th second -- see tick()
 
   render(container){
     this.container = container;
     if(!this.prompt) this.prompt = Utils.pick(this.PRESETS);
+    // Idempotent -- a no-op if a 'running' exam already has a live interval (e.g. the user
+    // tabbed away and back within the same page lifetime), and the only thing that starts a
+    // fresh one after a reload restored status:'running' with no timerHandle (setInterval ids
+    // don't survive a reload, so restore() can't recreate this itself).
+    this.ensureTimer();
     if(this.status==='config') this.drawConfig();
     else if(this.status==='running') this.drawRunning();
     else if(this.status==='review') this.drawReview();
     else this.drawDone();
+  },
+
+  ensureTimer(){
+    if(this.status==='running' && !this.timerHandle){
+      this.timerHandle = setInterval(()=>this.tick(), 1000);
+    }
+  },
+
+  // Writes the resumable subset of exam state to Storage.state.examSession. Deliberately
+  // clears instead of writing when status is 'done': drawDone's render depends on
+  // this.lastRecord (the finished {targetWords, outcome, category} summary), which isn't
+  // part of this schema -- the exam is already logged to examLog by this point, so there's
+  // nothing left to resume.
+  persist(){
+    if(this.status==='done'){ this.clearPersisted(); return; }
+    Storage.state.examSession = {
+      status: this.status, prompt: this.prompt, minutes: this.minutes, text: this.text,
+      remainingSec: this.remainingSec,
+      // Stamped only while running -- restore() uses it as "remainingSec was accurate as of
+      // this wall-clock time," to subtract elapsed real time on the next load. Meaningless
+      // (and left null) for config/review, which aren't counting down.
+      lastTickAt: this.status==='running' ? Date.now() : null,
+      targetWordIds: this.targetWords.map(w=>w.id),
+      checklist: this.checklist
+    };
+    Storage.save();
+  },
+  clearPersisted(){
+    if(Storage.state.examSession){ Storage.state.examSession = null; Storage.save(); }
+  },
+  // Resets Exam's in-memory state, independent of the persisted examSession -- used by
+  // Storage.importJSON('replace') alongside clearing state.examSession itself, since
+  // this.targetWords holds live word object references from the state that's about to be
+  // discarded (same concern Practice.session has, see importJSON's comment).
+  discard(){
+    if(this.timerHandle){ clearInterval(this.timerHandle); this.timerHandle=null; }
+    this.status='config'; this.prompt=''; this.text=''; this.remainingSec=0;
+    this.targetWords=[]; this.checklist={}; this.lastRecord=null;
+  },
+  // Called once at App.init, alongside Practice.restore(). Resolves targetWordIds back
+  // against Storage.state.words -- an id that no longer resolves (the word was deleted since
+  // the save) is dropped, along with its checklist entry, same as practiceSession's queue
+  // dropping unresolvable word ids.
+  restore(){
+    const saved = Storage.state.examSession;
+    if(!saved) return;
+    this.status = saved.status;
+    this.prompt = saved.prompt;
+    this.minutes = saved.minutes;
+    this.text = saved.text;
+    const resolvedWords = [];
+    const resolvedChecklist = {};
+    saved.targetWordIds.forEach(id=>{
+      const w = Storage.state.words.find(x=>x.id===id);
+      if(!w) return;
+      resolvedWords.push(w);
+      resolvedChecklist[id] = saved.checklist[id] || { outcome:null, category:null };
+    });
+    this.targetWords = resolvedWords;
+    this.checklist = resolvedChecklist;
+    if(this.status==='running'){
+      // Wall-clock-aware and one-sided: elapsed is however much real time passed since
+      // lastTickAt, floored at 0 via Math.max so a backward clock jump can't *increase*
+      // remainingSec (the failure mode that matters here is losing time while away, not
+      // gaining it).
+      const elapsedSec = saved.lastTickAt ? Math.max(0, Math.round((Date.now()-saved.lastTickAt)/1000)) : 0;
+      this.remainingSec = Math.max(0, saved.remainingSec - elapsedSec);
+      // The tab was closed/away for longer than the time that was left -- don't resume a
+      // countdown that's already at (or past) zero; move straight to the review checklist
+      // with whatever text survived, same as tick() reaching 0 normally would.
+      if(this.remainingSec<=0) this.status = 'review';
+    } else {
+      this.remainingSec = saved.remainingSec;
+    }
   },
 
   computeTargetPool(){
@@ -2956,12 +3097,12 @@ const Exam = {
       '<div class="btn-row" style="margin-top:16px;"><button type="button" class="btn primary" id="startExamBtn">▶ Start Exam</button></div>' +
       '</div>';
 
-    el.querySelector('#examPromptInput').addEventListener('input', (e)=>{ this.prompt = e.target.value; });
-    el.querySelector('#shufflePromptBtn').addEventListener('click', ()=>{ this.prompt = Utils.pick(this.PRESETS); this.drawConfig(); });
-    el.querySelectorAll('.min-btn').forEach(b=>b.addEventListener('click', ()=>{ this.minutes = +b.dataset.m; this.drawConfig(); }));
-    el.querySelector('#customMinutes').addEventListener('input', (e)=>{ const v=+e.target.value; if(v>0) this.minutes = v; });
+    el.querySelector('#examPromptInput').addEventListener('input', (e)=>{ this.prompt = e.target.value; this.persist(); });
+    el.querySelector('#shufflePromptBtn').addEventListener('click', ()=>{ this.prompt = Utils.pick(this.PRESETS); this.persist(); this.drawConfig(); });
+    el.querySelectorAll('.min-btn').forEach(b=>b.addEventListener('click', ()=>{ this.minutes = +b.dataset.m; this.persist(); this.drawConfig(); }));
+    el.querySelector('#customMinutes').addEventListener('input', (e)=>{ const v=+e.target.value; if(v>0){ this.minutes = v; this.persist(); } });
     const reshuffleBtn = el.querySelector('#reshuffleBtn');
-    if(reshuffleBtn) reshuffleBtn.addEventListener('click', ()=>{ this.targetWords = this.computeTargetPool(); this.drawConfig(); });
+    if(reshuffleBtn) reshuffleBtn.addEventListener('click', ()=>{ this.targetWords = this.computeTargetPool(); this.persist(); this.drawConfig(); });
     el.querySelector('#startExamBtn').addEventListener('click', ()=>this.start());
   },
 
@@ -2978,6 +3119,7 @@ const Exam = {
     this.targetWords.forEach(w=>{ this.checklist[w.id] = { outcome:null, category:null }; });
     this.drawRunning();
     this.timerHandle = setInterval(()=>this.tick(), 1000);
+    this.persist();
   },
 
   tick(){
@@ -2987,6 +3129,11 @@ const Exam = {
       display.textContent = this.fmtTime(this.remainingSec);
       display.classList.toggle('low', this.remainingSec<=60);
     }
+    // Every 5th second, not every one -- Storage.save() rewrites the whole state, and
+    // attempts[] alone can carry up to 15,000 entries. finishWriting()'s own persist() (via
+    // the 'review' transition below) still catches the exact remainingSec<=0 moment.
+    this._tickCount++;
+    if(this._tickCount%5===0) this.persist();
     if(this.remainingSec<=0){
       clearInterval(this.timerHandle); this.timerHandle=null;
       this.finishWriting();
@@ -3009,7 +3156,7 @@ const Exam = {
       '<div class="btn-row" style="margin-top:10px;"><button type="button" class="btn bad" id="finishNowBtn">Finish Now</button></div>' +
       '</div>';
     const ta = el.querySelector('#examTextArea');
-    ta.addEventListener('input', ()=>{ this.text = ta.value; });
+    ta.addEventListener('input', ()=>{ this.text = ta.value; this.persist(); });
     ta.focus();
     el.querySelector('#finishNowBtn').addEventListener('click', ()=>{
       Modal.confirm('Finish the exam now? The timer will stop and you\'ll move to the review checklist.', ()=>{
@@ -3021,6 +3168,7 @@ const Exam = {
 
   finishWriting(){
     this.status='review';
+    this.persist();
     this.render(this.container);
   },
 
@@ -3068,12 +3216,14 @@ const Exam = {
         btn.addEventListener('click', ()=>{
           this.checklist[wid].outcome = btn.dataset.o;
           if(btn.dataset.o!=='incorrect') this.checklist[wid].category = null;
+          this.persist();
           this.drawReview();
         });
       });
       item.querySelectorAll('.cat-wrap button').forEach(btn=>{
         btn.addEventListener('click', ()=>{
           this.checklist[wid].category = btn.dataset.c;
+          this.persist();
           this.drawReview();
         });
       });
@@ -3096,8 +3246,13 @@ const Exam = {
       // 'none' (did not use): no mastery change, no error logged
     });
     Storage.state.examLog.push(record);
-    Storage.save();
     this.status='done';
+    // Clears examSession rather than persisting it -- status is now 'done', and persist()
+    // already redirects a 'done' status here anyway (see its comment). Set directly (not via
+    // clearPersisted(), which has its own conditional save) so this one Storage.save() below
+    // covers both the examLog push and the cleared examSession together.
+    Storage.state.examSession = null;
+    Storage.save();
     this.lastRecord = record;
     this.render(this.container);
   },
@@ -3117,6 +3272,9 @@ const Exam = {
       '<button type="button" class="btn primary" id="newExamBtn">Start Another Exam</button></div>';
     this.container.querySelector('#newExamBtn').addEventListener('click', ()=>{
       this.status='config'; this.prompt=''; this.text=''; this.checklist={}; this.targetWords=[];
+      // Nothing to resume yet -- examSession is already null from submitReview(); this is
+      // just defense in depth in case that ever changes.
+      this.clearPersisted();
       this.render(this.container);
     });
   }
@@ -3424,7 +3582,16 @@ function computeDimensionCoverage(words){
 function computeArmComparison(words, attempts){
   attempts = attempts || [];
   const byWord = {};
+  // allByWord is unfiltered (every track, including untracked teaching/writing/exam entries)
+  // -- the attempts-to-Stable scan below needs the untracked ones too (they feed
+  // stableOtherSum), which byWord's tracked-only entries can't provide. Building this once
+  // here turns the per-word upToStable lookup from an O(attempts) re-filter of the whole
+  // array into an O(that word's own attempts) slice of a pre-built index -- O(words x
+  // attempts) over the full array otherwise, which gets into the millions of comparisons
+  // once attempts[] is near its 15,000-entry cap and there are hundreds of taught words.
+  const allByWord = {};
   attempts.forEach(a=>{
+    (allByWord[a.wordId] || (allByWord[a.wordId]=[])).push(a);
     if(a.track!=='legacy' && a.track!=='fsrs') return;
     (byWord[a.wordId] || (byWord[a.wordId]=[])).push(a);
   });
@@ -3436,6 +3603,10 @@ function computeArmComparison(words, attempts){
   let stableWordN=0, stableAttemptsSum=0, stableLegacySum=0, stableFsrsSum=0, stableOtherSum=0;
 
   taught.forEach(w=>{
+    // Deliberately byWord (tracked-only), not allByWord -- a word with only untracked
+    // teaching/writing/exam entries must still be excluded here (it has zero attempts in
+    // either arm), and allByWord alone can't make that distinction since it also carries
+    // those untracked entries.
     const tracked = byWord[w.id];
     if(!tracked || !tracked.length) return; // excluded: no tracked attempts in either arm
 
@@ -3478,7 +3649,7 @@ function computeArmComparison(words, attempts){
     // excluding it here would drop exactly the words that mastered hardest.
     const m = WordModel.computeMastery(w);
     if((m==='Stable' || m==='Exam Ready') && typeof w.firstMasteryAt==='number'){
-      const upToStable = attempts.filter(a=>a.wordId===w.id && a.ts<=w.firstMasteryAt);
+      const upToStable = (allByWord[w.id]||[]).filter(a=>a.ts<=w.firstMasteryAt);
       if(upToStable.length>0){
         stableWordN++;
         stableAttemptsSum += upToStable.length;
