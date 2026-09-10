@@ -1701,13 +1701,6 @@ const App = {
     if(t==='system') document.documentElement.removeAttribute('data-theme');
     else document.documentElement.setAttribute('data-theme', t);
   },
-  cycleTheme(){
-    const order = ['system','light','dark'];
-    const i = order.indexOf(Storage.state.settings.theme);
-    Storage.state.settings.theme = order[(i+1)%order.length];
-    Storage.save(); this.applyTheme();
-    Utils.toast('Theme: ' + Storage.state.settings.theme);
-  },
 
   showTab(tab){
     // Covers leaving the Phase 2 Add flow via a tab-nav click instead of Session's own
@@ -2272,7 +2265,11 @@ const Views = {
   renderSettings(){
     const el = document.getElementById('view-settings');
     const s = Storage.state.settings;
+    const themes = [{key:'system',label:'System'},{key:'light',label:'Light'},{key:'dark',label:'Dark'}];
     el.innerHTML =
+      '<div class="card"><h2>Appearance</h2>' +
+      '<div class="btn-row">' + themes.map(t=>'<button type="button" class="btn '+(s.theme===t.key?'primary':'ghost')+' small theme-btn" data-theme-key="'+t.key+'">'+t.label+'</button>').join('') + '</div></div>' +
+
       '<div class="card"><h2>Exam Date</h2>' +
       '<p class="field-hint">If set, scheduling favors getting words to "Exam Ready" before this date.</p>' +
       '<input type="date" id="examDateInput" value="'+(s.examDate||'')+'">' +
@@ -2291,6 +2288,11 @@ const Views = {
 
       '<div class="card"><h3>About the method</h3>' +
       '<p class="field-hint">This trainer prioritizes generative retrieval (typing/producing from memory) over recognition, uses adaptive spacing instead of a fixed schedule, and fades mnemonics once retrieval is reliable. Recognition is a warm-up only — it is never treated as mastery.</p></div>';
+
+    el.querySelectorAll('.theme-btn').forEach(btn=>btn.addEventListener('click', ()=>{
+      Storage.state.settings.theme = btn.dataset.themeKey;
+      Storage.save(); App.applyTheme(); this.renderSettings();
+    }));
 
     el.querySelector('#saveExamBtn').addEventListener('click', ()=>{
       const v = el.querySelector('#examDateInput').value;
@@ -2356,6 +2358,14 @@ const Views = {
   },
 
   runFreePractice(opts){
+    // Disown any abandoned Daily Session before building a fresh standalone one. Session.active
+    // is set in Session.start() and only cleared in Session.finish() -- a user who starts a
+    // Session and navigates away via the tab bar leaves active=true with phase wherever they
+    // left off, and nothing else reads or resets it. Completing this standalone practice would
+    // otherwise hit #doneBtn's wasActive branch and run finishPhase() against that abandoned
+    // Session instead of just returning to the dashboard. Same class of bug as #doneBtn's own
+    // wasActive fix: reading session state after a fresh flow has already mutated it.
+    Session.active = false;
     opts = opts || {};
     const queue = Practice.buildDueQueue(opts);
     if(queue.length===0){
@@ -2375,6 +2385,8 @@ const Views = {
   // The render side disables the button when this set is empty; this guard is just defense
   // in depth against routing into a 0-item session some other way.
   runDimensionPractice(dimKey){
+    // See runFreePractice's comment -- same disown-on-entry fix.
+    Session.active = false;
     const level = DIM_PRACTICE_LEVEL[dimKey] || 2;
     const words = Storage.state.words.filter(w=>w.dims && w.dims[dimKey] && w.dims[dimKey].fail>0);
     if(words.length===0){ Utils.toast('No words have failed this dimension yet.'); return; }
@@ -2386,6 +2398,8 @@ const Views = {
   },
 
   runProductionDrills(){
+    // See runFreePractice's comment -- same disown-on-entry fix.
+    Session.active = false;
     const queue = Practice.buildProductionQueue(8);
     if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
     Practice.session = { queue, idx:0, results:[], mode:'production' };
@@ -2570,6 +2584,11 @@ const Views = {
     // hinted item. Log the failed first attempt through the same path as everything else so it
     // lands in both history and attempts[] before the hint is shown.
     WordModel.logAttempt(q.word, q.level, false, { rating:'again', hinted:false, track: q.track||'legacy', attemptsPhase:'practice', dimension: q.dimension });
+    // Same bump handleGraded's failure branch makes for a non-hinted miss -- without this,
+    // dailyActivity.reviews and attempts[] disagreed on the hinted-item count by exactly the
+    // number of hints given, since this first wrong answer landed in history/attempts[] above
+    // but nowhere else.
+    DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
     const answer = q.correctAnswer;
     const hint = answer[0] + '_'.repeat(Math.max(1,answer.length-1));
     answerArea.innerHTML = '<div class="feedback incorrect">Not quite. One more try with a hint:</div>' +
