@@ -307,6 +307,9 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 .achv-card .name{font-size:12px;font-weight:650;line-height:1.3;}
 .achv-card .desc{font-size:10.5px;color:var(--text-dim);margin-top:4px;line-height:1.3;}
 .achv-card .lock{font-family:var(--mono);font-size:10px;text-transform:none;color:var(--text-dim);margin-top:4px;}
+.achv-progress{height:4px;border-radius:99px;background:var(--border);margin-top:7px;overflow:hidden;}
+.achv-progress-bar{height:100%;background:var(--accent);border-radius:99px;}
+.achv-progress-label{font-family:var(--mono);font-size:9.5px;color:var(--text-dim);margin-top:3px;}
 .streak-banner{display:flex;align-items:center;gap:10px;font-family:var(--serif);font-size:16px;font-weight:650;}
 .streak-banner .flame{font-size:24px;}
 
@@ -2631,14 +2634,14 @@ const Analytics = {
   charts: {},
 
   ACHIEVEMENTS: [
-    { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1 },
-    { id:'vocab_builder', icon:'📚', name:'Vocabulary Builder', desc:'Complete teaching for 10 words.', check: ctx=>ctx.taughtCount>=10 },
-    { id:'scholar', icon:'🎓', name:'Scholar', desc:'Complete teaching for 50 words.', check: ctx=>ctx.taughtCount>=50 },
-    { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5 },
-    { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1 },
-    { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10 },
-    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7 },
-    { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1 }
+    { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1, metric: ctx=>ctx.taughtCount, target:1 },
+    { id:'vocab_builder', icon:'📚', name:'Vocabulary Builder', desc:'Complete teaching for 10 words.', check: ctx=>ctx.taughtCount>=10, metric: ctx=>ctx.taughtCount, target:10 },
+    { id:'scholar', icon:'🎓', name:'Scholar', desc:'Complete teaching for 50 words.', check: ctx=>ctx.taughtCount>=50, metric: ctx=>ctx.taughtCount, target:50 },
+    { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5, metric: ctx=>ctx.errorLogCount, target:5 },
+    { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1, metric: ctx=>ctx.examReadyCount, target:1 },
+    { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10, metric: ctx=>ctx.examReadyCount, target:10 },
+    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7, metric: ctx=>ctx.streak, target:7 },
+    { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1, metric: ctx=>ctx.writingSessions, target:1 }
   ],
 
   render(){
@@ -2662,10 +2665,10 @@ const Analytics = {
     }
 
     html += '<div class="analytics-grid">' +
-      '<div class="chart-card"><h3>Words Learned Over Time</h3><div class="chart-sub">Cumulative words added</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Words Added vs. Learned Over Time</h3><div class="chart-sub">Cumulative added vs. cumulative reached Stable or better</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
       '<div class="chart-card"><h3>Current Mastery Distribution</h3><div class="chart-sub">Across '+words.length+' word(s)</div><div class="chart-wrap"><canvas id="chartMastery"></canvas></div></div>' +
       '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
-      '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged errors by category</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged failures by mastery dimension</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
       '</div>';
     el.innerHTML = html;
 
@@ -2696,8 +2699,21 @@ const Analytics = {
     this.charts = {};
   },
 
-  computeStreak(){
+  // Any day with practice activity counts -- not just a full 4-phase Session.finish()
+  // (sessionLog). Free practice, drills, a timed exam/writing session, and teaching-only
+  // steps all write dated entries elsewhere (word.history via WordModel.logAttempt covers
+  // teaching + retrieval + matched-word writing/exam attempts; writingLog/examLog also carry
+  // their own session date even when a free-write matches no target word). Union all of them.
+  activityDates(){
     const dates = new Set((Storage.state.sessionLog||[]).map(s=>s.date));
+    (Storage.state.writingLog||[]).forEach(s=>{ if(s.date) dates.add(s.date); });
+    (Storage.state.examLog||[]).forEach(s=>{ if(s.date) dates.add(s.date); });
+    Storage.state.words.forEach(w=>(w.history||[]).forEach(h=>{ if(h.date) dates.add(h.date); }));
+    return dates;
+  },
+
+  computeStreak(){
+    const dates = this.activityDates();
     if(dates.size===0) return 0;
     let streak = 0;
     let cursor = Utils.todayISO();
@@ -2711,9 +2727,17 @@ const Analytics = {
     const taughtCount = words.filter(w=>w.teaching && w.teaching.completed).length;
     const examReadyCount = words.filter(w=>WordModel.computeMastery(w)==='Exam Ready').length;
     const totalAttempts = words.reduce((sum,w)=>sum+w.history.length, 0);
-    const totalCorrect = words.reduce((sum,w)=>sum+w.history.filter(h=>h.correct).length, 0);
-    const accuracy = totalAttempts ? Math.round(totalCorrect/totalAttempts*100) : 0;
+    // Headline accuracy is retrieval-only (phase!=='teaching'): teaching-phase attempts are
+    // scaffolded MCQ/self-graded steps with the answer visible, so folding them into the
+    // headline number inflates it. Teaching accuracy is kept as its own secondary stat.
+    const retrievalAttempts = words.reduce((sum,w)=>sum+w.history.filter(h=>h.phase!=='teaching').length, 0);
+    const retrievalCorrect = words.reduce((sum,w)=>sum+w.history.filter(h=>h.phase!=='teaching'&&h.correct).length, 0);
+    const accuracy = retrievalAttempts ? Math.round(retrievalCorrect/retrievalAttempts*100) : 0;
+    const teachingAttempts = totalAttempts - retrievalAttempts;
+    const teachingCorrect = words.reduce((sum,w)=>sum+w.history.filter(h=>h.phase==='teaching'&&h.correct).length, 0);
+    const teachingAccuracy = teachingAttempts ? Math.round(teachingCorrect/teachingAttempts*100) : 0;
     const streak = this.computeStreak();
+    const fullSessionCount = (Storage.state.sessionLog||[]).length;
     const errorLogCount = Storage.state.errorLog.length;
     const writingSessions = (Storage.state.writingLog||[]).length + (Storage.state.examLog||[]).length;
 
@@ -2721,11 +2745,12 @@ const Analytics = {
 
     const cards = this.ACHIEVEMENTS.map(a=>{
       const unlocked = a.check(ctx);
+      const progress = (!unlocked && a.metric && a.target) ? '<div class="achv-progress"><div class="achv-progress-bar" style="width:'+Math.round(Utils.clamp(a.metric(ctx)/a.target,0,1)*100)+'%"></div></div><div class="achv-progress-label">'+Math.min(a.metric(ctx),a.target)+'/'+a.target+'</div>' : '';
       return '<div class="achv-card '+(unlocked?'unlocked':'locked')+'">' +
         '<div class="icon">'+a.icon+'</div>' +
         '<div class="name">'+Utils.escapeHtml(a.name)+'</div>' +
         '<div class="desc">'+Utils.escapeHtml(a.desc)+'</div>' +
-        (unlocked?'':'<div class="lock">🔒 Locked</div>') +
+        (unlocked?'':'<div class="lock">🔒 Locked</div>'+progress) +
         '</div>';
     }).join('');
 
@@ -2734,14 +2759,22 @@ const Analytics = {
       '<div class="achv-stats-grid" style="margin-top:14px;">' +
       '<div class="stat"><div class="num">'+streak+'</div><div class="label">Study Streak</div></div>' +
       '<div class="stat"><div class="num">'+totalAttempts+'</div><div class="label">Practice Attempts</div></div>' +
-      '<div class="stat '+(accuracy>=80?'good':accuracy>0&&accuracy<50?'bad':'')+'"><div class="num">'+accuracy+'%</div><div class="label">Accuracy Rate</div></div>' +
+      '<div class="stat '+(accuracy>=80?'good':accuracy>0&&accuracy<50?'bad':'')+'"><div class="num">'+accuracy+'%</div><div class="label">Retrieval Accuracy</div></div>' +
       '<div class="stat good"><div class="num">'+examReadyCount+'</div><div class="label">Exam Ready</div></div>' +
+      '<div class="stat"><div class="num">'+teachingAccuracy+'%</div><div class="label">Teaching Accuracy</div></div>' +
+      '<div class="stat"><div class="num">'+fullSessionCount+'</div><div class="label">Full Sessions</div></div>' +
       '</div>' +
       '<h3 style="margin-top:18px;">🏆 Achievements</h3>' +
       '<div class="achv-scroll">' + cards + '</div>' +
       '</div>';
   },
 
+  // "Reached" uses each word's CURRENT mastery stage (via WordModel.computeMastery, not
+  // reinvented here) but places it on the timeline at the date of that word's most recent
+  // history entry, since we don't persist a per-word "became Stable" timestamp. This is an
+  // approximation -- a word's reached-date can look later than the day it actually crossed
+  // the threshold if it hasn't been practiced since -- but it's the closest honest reading
+  // of "cumulative reached Stable-or-better over time" from existing state, no new logging.
   buildLearningProgressData(){
     const words = Storage.state.words;
     const createdDates = words.map(w=>w.created).filter(Boolean).sort();
@@ -2749,27 +2782,37 @@ const Analytics = {
     const earliest = createdDates[0] || today;
     const spanDays = Utils.diffDays(earliest, today);
     const start = spanDays < 29 ? earliest : Utils.addDays(today, -29);
-    const labels = [], data = [];
+
+    const reachedStable = words.filter(w=>{
+      const stage = WordModel.computeMastery(w);
+      return stage==='Stable' || stage==='Exam Ready';
+    }).map(w=>{
+      const h = w.history;
+      return (h && h.length) ? h[h.length-1].date : w.created;
+    }).filter(Boolean);
+
+    const labels = [], added = [], reached = [];
     let cursor = start;
     let guard = 0;
     while(cursor <= today && guard < 400){
       labels.push(cursor);
-      data.push(words.filter(w=>w.created<=cursor).length);
+      added.push(words.filter(w=>w.created<=cursor).length);
+      reached.push(reachedStable.filter(d=>d<=cursor).length);
       cursor = Utils.addDays(cursor, 1);
       guard++;
     }
-    return { labels, data };
+    return { labels, added, reached };
   },
 
   renderProgressChart(theme){
-    const { labels, data } = this.buildLearningProgressData();
+    const { labels, added, reached } = this.buildLearningProgressData();
     this.charts.progress = new Chart(document.getElementById('chartProgress'), {
       type: 'line',
       data: {
         labels: labels.map(d=>Utils.fmtDate(d)),
         datasets: [{
-          label: 'Words Learned',
-          data,
+          label: 'Words Added',
+          data: added,
           borderColor: theme.accent,
           backgroundColor: theme.accentWash,
           borderWidth: 2,
@@ -2778,13 +2821,25 @@ const Analytics = {
           pointRadius: labels.length>20 ? 0 : 3,
           pointBackgroundColor: theme.accent,
           pointBorderWidth: 0
+        }, {
+          label: 'Reached Stable+',
+          data: reached,
+          borderColor: theme.good,
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          fill: false,
+          tension: .35,
+          pointRadius: labels.length>20 ? 0 : 3,
+          pointBackgroundColor: theme.good,
+          pointBorderWidth: 0
         }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        // Card header above already names the chart, so the built-in title is
-        // skipped to avoid a duplicate line of text (Analytics layout pass).
-        plugins: { legend: { display: false }, title: { display: false } },
+        // Card header above already names the chart, so the built-in title is skipped
+        // (Analytics layout pass) -- but the legend stays on here, unlike the other
+        // charts, since two series now need distinguishing.
+        plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 8, usePointStyle: true, pointStyle: 'circle', font: { size: 11 }, padding: 12 } }, title: { display: false } },
         scales: {
           x: { grid: { display: false }, border: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
           y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }
@@ -2796,7 +2851,11 @@ const Analytics = {
   renderMasteryChart(theme){
     const words = Storage.state.words;
     const stages = ['New','Learning','Unstable','Stable','Exam Ready'];
-    const colors = [theme.grid, theme.accent, theme.highlight, theme.good, theme.text];
+    // Exam Ready used to be theme.text, which goes near-white in dark mode and reads as
+    // the doughnut's empty/background color. Use a fixed hue instead of a theme-relative
+    // one so the slice stays visible and distinct (from grid/accent/highlight/good) in
+    // both themes.
+    const colors = [theme.grid, theme.accent, theme.highlight, theme.good, '#8E5CF7'];
     const counts = stages.map(s=>words.filter(w=>WordModel.computeMastery(w)===s).length);
     const total = words.length;
     this.charts.mastery = new Chart(document.getElementById('chartMastery'), {
@@ -2832,14 +2891,18 @@ const Analytics = {
   },
 
   renderErrorChart(theme){
-    const totals = ERROR_CATEGORIES.map(c=>Storage.state.errorLog.filter(e=>e.category===c).length);
+    const words = Storage.state.words;
+    const totals = DIMENSIONS.map(d=>words.reduce((sum,w)=>sum+((w.dims&&w.dims[d.key]&&w.dims[d.key].fail)||0), 0));
     this.charts.errors = new Chart(document.getElementById('chartErrors'), {
       type: 'bar',
-      data: { labels: ERROR_CATEGORIES, datasets: [{ label: 'Errors', data: totals, backgroundColor: theme.accent, borderRadius: 6, barThickness: 22 }] },
+      data: { labels: DIMENSIONS.map(d=>d.label), datasets: [{ label: 'Failures', data: totals, backgroundColor: theme.accent, borderRadius: 6, barThickness: 16 }] },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        // Horizontal, like the forecast chart -- 11 dimension labels (some multi-word,
+        // e.g. "Contextual Comprehension") don't fit as rotated x-axis ticks the way the
+        // old 7 short error-category labels did.
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, title: { display: false } },
-        scales: { x: { grid: { display: false }, border: { display: false } }, y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } } }
+        scales: { x: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }, y: { grid: { display: false }, border: { display: false } } }
       }
     });
   }
