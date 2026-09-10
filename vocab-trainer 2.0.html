@@ -2634,14 +2634,14 @@ const Analytics = {
   charts: {},
 
   ACHIEVEMENTS: [
-    { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1, metric: ctx=>ctx.taughtCount, target:1 },
-    { id:'vocab_builder', icon:'📚', name:'Vocabulary Builder', desc:'Complete teaching for 10 words.', check: ctx=>ctx.taughtCount>=10, metric: ctx=>ctx.taughtCount, target:10 },
-    { id:'scholar', icon:'🎓', name:'Scholar', desc:'Complete teaching for 50 words.', check: ctx=>ctx.taughtCount>=50, metric: ctx=>ctx.taughtCount, target:50 },
-    { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5, metric: ctx=>ctx.errorLogCount, target:5 },
-    { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1, metric: ctx=>ctx.examReadyCount, target:1 },
-    { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10, metric: ctx=>ctx.examReadyCount, target:10 },
-    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7, metric: ctx=>ctx.streak, target:7 },
-    { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1, metric: ctx=>ctx.writingSessions, target:1 }
+    { id:'first_word', icon:'📖', name:'First Word Taught', desc:'Complete teaching for 1 word.', check: ctx=>ctx.taughtCount>=1, metric: ctx=>ctx.taughtCount, target:1, unit:'words taught' },
+    { id:'vocab_builder', icon:'📚', name:'Vocabulary Builder', desc:'Complete teaching for 10 words.', check: ctx=>ctx.taughtCount>=10, metric: ctx=>ctx.taughtCount, target:10, unit:'words taught' },
+    { id:'scholar', icon:'🎓', name:'Scholar', desc:'Complete teaching for 50 words.', check: ctx=>ctx.taughtCount>=50, metric: ctx=>ctx.taughtCount, target:50, unit:'words taught' },
+    { id:'error_fixer', icon:'🛠️', name:'Error Fixer', desc:'Log 5 error repairs.', check: ctx=>ctx.errorLogCount>=5, metric: ctx=>ctx.errorLogCount, target:5, unit:'errors logged' },
+    { id:'exam_ready', icon:'🎯', name:'Exam Ready', desc:'Get 1 word to Exam Ready.', check: ctx=>ctx.examReadyCount>=1, metric: ctx=>ctx.examReadyCount, target:1, unit:'words exam-ready' },
+    { id:'exam_master', icon:'🏆', name:'Exam Master', desc:'Get 10 words to Exam Ready.', check: ctx=>ctx.examReadyCount>=10, metric: ctx=>ctx.examReadyCount, target:10, unit:'words exam-ready' },
+    { id:'consistent_learner', icon:'🔥', name:'Consistent Learner', desc:'Maintain a 7-day study streak.', check: ctx=>ctx.streak>=7, metric: ctx=>ctx.streak, target:7, unit:'day streak' },
+    { id:'writing_warrior', icon:'✍️', name:'Writing Warrior', desc:'Complete 1 Timed Exam or Audit session.', check: ctx=>ctx.writingSessions>=1, metric: ctx=>ctx.writingSessions, target:1, unit:'sessions' }
   ],
 
   render(){
@@ -2665,7 +2665,7 @@ const Analytics = {
     }
 
     html += '<div class="analytics-grid">' +
-      '<div class="chart-card"><h3>Words Added vs. Learned Over Time</h3><div class="chart-sub">Cumulative added vs. cumulative reached Stable or better</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
+      '<div class="chart-card"><h3>Words Added Over Time</h3><div class="chart-sub">Cumulative words added</div><div class="chart-wrap"><canvas id="chartProgress"></canvas></div></div>' +
       '<div class="chart-card"><h3>Current Mastery Distribution</h3><div class="chart-sub">Across '+words.length+' word(s)</div><div class="chart-wrap"><canvas id="chartMastery"></canvas></div></div>' +
       '<div class="chart-card"><h3>Upcoming Review Load</h3><div class="chart-sub">Taught words due within N days (cumulative)</div><div class="chart-wrap"><canvas id="chartForecast"></canvas></div></div>' +
       '<div class="chart-card"><h3>Weakest Vocabulary Dimensions</h3><div class="chart-sub">Total logged failures by mastery dimension</div><div class="chart-wrap"><canvas id="chartErrors"></canvas></div></div>' +
@@ -2745,7 +2745,7 @@ const Analytics = {
 
     const cards = this.ACHIEVEMENTS.map(a=>{
       const unlocked = a.check(ctx);
-      const progress = (!unlocked && a.metric && a.target) ? '<div class="achv-progress"><div class="achv-progress-bar" style="width:'+Math.round(Utils.clamp(a.metric(ctx)/a.target,0,1)*100)+'%"></div></div><div class="achv-progress-label">'+Math.min(a.metric(ctx),a.target)+'/'+a.target+'</div>' : '';
+      const progress = (!unlocked && a.metric && a.target) ? '<div class="achv-progress"><div class="achv-progress-bar" style="width:'+Math.round(Utils.clamp(a.metric(ctx)/a.target,0,1)*100)+'%"></div></div><div class="achv-progress-label">'+Math.min(a.metric(ctx),a.target)+'/'+a.target+' '+Utils.escapeHtml(a.unit||'')+'</div>' : '';
       return '<div class="achv-card '+(unlocked?'unlocked':'locked')+'">' +
         '<div class="icon">'+a.icon+'</div>' +
         '<div class="name">'+Utils.escapeHtml(a.name)+'</div>' +
@@ -2769,12 +2769,6 @@ const Analytics = {
       '</div>';
   },
 
-  // "Reached" uses each word's CURRENT mastery stage (via WordModel.computeMastery, not
-  // reinvented here) but places it on the timeline at the date of that word's most recent
-  // history entry, since we don't persist a per-word "became Stable" timestamp. This is an
-  // approximation -- a word's reached-date can look later than the day it actually crossed
-  // the threshold if it hasn't been practiced since -- but it's the closest honest reading
-  // of "cumulative reached Stable-or-better over time" from existing state, no new logging.
   buildLearningProgressData(){
     const words = Storage.state.words;
     const createdDates = words.map(w=>w.created).filter(Boolean).sort();
@@ -2782,37 +2776,27 @@ const Analytics = {
     const earliest = createdDates[0] || today;
     const spanDays = Utils.diffDays(earliest, today);
     const start = spanDays < 29 ? earliest : Utils.addDays(today, -29);
-
-    const reachedStable = words.filter(w=>{
-      const stage = WordModel.computeMastery(w);
-      return stage==='Stable' || stage==='Exam Ready';
-    }).map(w=>{
-      const h = w.history;
-      return (h && h.length) ? h[h.length-1].date : w.created;
-    }).filter(Boolean);
-
-    const labels = [], added = [], reached = [];
+    const labels = [], data = [];
     let cursor = start;
     let guard = 0;
     while(cursor <= today && guard < 400){
       labels.push(cursor);
-      added.push(words.filter(w=>w.created<=cursor).length);
-      reached.push(reachedStable.filter(d=>d<=cursor).length);
+      data.push(words.filter(w=>w.created<=cursor).length);
       cursor = Utils.addDays(cursor, 1);
       guard++;
     }
-    return { labels, added, reached };
+    return { labels, data };
   },
 
   renderProgressChart(theme){
-    const { labels, added, reached } = this.buildLearningProgressData();
+    const { labels, data } = this.buildLearningProgressData();
     this.charts.progress = new Chart(document.getElementById('chartProgress'), {
       type: 'line',
       data: {
         labels: labels.map(d=>Utils.fmtDate(d)),
         datasets: [{
           label: 'Words Added',
-          data: added,
+          data,
           borderColor: theme.accent,
           backgroundColor: theme.accentWash,
           borderWidth: 2,
@@ -2821,25 +2805,13 @@ const Analytics = {
           pointRadius: labels.length>20 ? 0 : 3,
           pointBackgroundColor: theme.accent,
           pointBorderWidth: 0
-        }, {
-          label: 'Reached Stable+',
-          data: reached,
-          borderColor: theme.good,
-          backgroundColor: 'transparent',
-          borderWidth: 2,
-          fill: false,
-          tension: .35,
-          pointRadius: labels.length>20 ? 0 : 3,
-          pointBackgroundColor: theme.good,
-          pointBorderWidth: 0
         }]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        // Card header above already names the chart, so the built-in title is skipped
-        // (Analytics layout pass) -- but the legend stays on here, unlike the other
-        // charts, since two series now need distinguishing.
-        plugins: { legend: { display: true, position: 'bottom', labels: { boxWidth: 8, usePointStyle: true, pointStyle: 'circle', font: { size: 11 }, padding: 12 } }, title: { display: false } },
+        // Card header above already names the chart, so the built-in title is
+        // skipped to avoid a duplicate line of text (Analytics layout pass).
+        plugins: { legend: { display: false }, title: { display: false } },
         scales: {
           x: { grid: { display: false }, border: { display: false }, ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 } },
           y: { grid: { color: theme.grid }, border: { display: false }, beginAtZero: true, ticks: { precision: 0 } }
