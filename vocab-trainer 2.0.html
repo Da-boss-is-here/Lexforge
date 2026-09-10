@@ -3303,6 +3303,104 @@ function computeDimensionCoverage(words){
   });
 }
 
+/* ============================== PHASE F+1: ARM COMPARISON (pure) ==============================
+   Read-only aggregation over Storage.state.attempts (Phase F instrumentation) + word state.
+   No writer touched, no schema change -- this section only reads.
+
+   Pinned to FSRS-6 (FSRSScheduler.FSRS_GENERATION, ts-fsrs 5.4.2 vendored in
+   lib/fsrs.umd.js). attempts[].track is 'legacy'/'fsrs'/null -- it does not encode which FSRS
+   *generation* produced an 'fsrs' attempt, so if the library is ever upgraded, every existing
+   'fsrs'-tracked attempt would silently become indistinguishable from new FSRS-7 attempts under
+   the same tag, making the "fsrs" arm a heterogeneous mix rather than one scheduling regime. The
+   version pin is recorded in the rendered section header (see Analytics.renderArmComparisonCard)
+   as the actual policy: a generation change should be evaluated as its own experiment on top of
+   this one's results, not folded in here.
+
+   Eligibility: both scheduling regimes run concurrently per word from the moment teaching
+   completes (FSRS grades recognition/meaningRecall/production; the legacy ladder grades
+   everything else, via the same practice session) -- there is no word-level arm flip and no
+   date segmentation needed. A word simply has tracked attempts in whichever arm(s) its question
+   draws have actually exercised. Per-word metrics below exclude any word with zero tracked
+   (track==='legacy' or 'fsrs') attempts -- untracked events (teaching/writing/exam, track:null)
+   don't belong to either arm and can't inform an arm comparison. */
+function computeArmComparison(words, attempts){
+  attempts = attempts || [];
+  const byWord = {};
+  attempts.forEach(a=>{
+    if(a.track!=='legacy' && a.track!=='fsrs') return;
+    (byWord[a.wordId] || (byWord[a.wordId]=[])).push(a);
+  });
+
+  const taught = (words||[]).filter(w=>w && w.teaching && w.teaching.completed);
+
+  let legacyIntervalSum=0, legacyIntervalN=0;
+  let fsrsIntervalSum=0, fsrsIntervalN=0;
+  let stableWordN=0, stableAttemptsSum=0, stableLegacySum=0, stableFsrsSum=0, stableOtherSum=0;
+
+  taught.forEach(w=>{
+    const tracked = byWord[w.id];
+    if(!tracked || !tracked.length) return; // excluded: no tracked attempts in either arm
+
+    // Mean interval, normalized to one value per word before averaging -- legacy has exactly
+    // one interval per word (word.srs.interval); FSRS has up to three (recognition,
+    // meaningRecall, production, each with their own scheduled_days). Averaging raw per-card
+    // FSRS values against per-word legacy values would compare different units, so FSRS is
+    // collapsed to a per-word mean across its *active* dimensions (reps>0 -- "hasn't started"
+    // isn't a scheduled interval) first.
+    if(tracked.some(a=>a.track==='legacy')){
+      legacyIntervalSum += w.srs.interval||0;
+      legacyIntervalN++;
+    }
+    if(tracked.some(a=>a.track==='fsrs')){
+      const activeDims = FSRSScheduler.DIMENSIONS.filter(d=>w.fsrs && w.fsrs[d] && w.fsrs[d].reps>0);
+      if(activeDims.length){
+        fsrsIntervalSum += activeDims.reduce((s,d)=>s+(w.fsrs[d].scheduled_days||0), 0) / activeDims.length;
+        fsrsIntervalN++;
+      }
+    }
+
+    // Attempts-to-Stable: word.firstMasteryAt is the set-once timestamp of when this word
+    // first reached Stable/Exam Ready (WordModel.checkFirstMastery) -- used here as the
+    // boundary for "attempts logged before this word became Stable". Requires
+    // computeMastery(word)==='Stable' *right now* (not Exam Ready -- see commit message on why
+    // this anchor, applied identically to both arms, is valid despite being legacy-flavored)
+    // and firstMasteryAt actually set; a word that's currently Stable but has no
+    // firstMasteryAt (imported/repaired state, see repairWord) has no boundary to count
+    // against and is excluded from this metric specifically, even though it still counts
+    // toward the interval metrics above.
+    if(WordModel.computeMastery(w)==='Stable' && typeof w.firstMasteryAt==='number'){
+      const upToStable = attempts.filter(a=>a.wordId===w.id && a.ts<=w.firstMasteryAt);
+      if(upToStable.length>0){
+        stableWordN++;
+        stableAttemptsSum += upToStable.length;
+        stableLegacySum += upToStable.filter(a=>a.track==='legacy').length;
+        stableFsrsSum += upToStable.filter(a=>a.track==='fsrs').length;
+        stableOtherSum += upToStable.filter(a=>a.track!=='legacy' && a.track!=='fsrs').length;
+      }
+    }
+  });
+
+  return {
+    fsrsGeneration: FSRSScheduler.FSRS_GENERATION,
+    legacy: { meanInterval: legacyIntervalN ? legacyIntervalSum/legacyIntervalN : null, n: legacyIntervalN },
+    fsrs: { meanInterval: fsrsIntervalN ? fsrsIntervalSum/fsrsIntervalN : null, n: fsrsIntervalN },
+    // reviewsToStable.mean is the headline: unsegmented, mean count of ALL attempts (both
+    // tracks, plus any untracked ones for that word) logged before firstMasteryAt, averaged
+    // across qualifying words. legacyMean/fsrsMean/otherMean are the same qualifying-word set's
+    // per-arm attempt counts, shown only as a descriptive breakdown of what the headline is
+    // made of -- the app has no model that decomposes a word's progress into
+    // "attributable to FSRS vs legacy scheduling" within that one word, so a causal per-arm
+    // number here would be fabricated.
+    reviewsToStable: {
+      mean: stableWordN ? stableAttemptsSum/stableWordN : null,
+      n: stableWordN,
+      legacyMean: stableWordN ? stableLegacySum/stableWordN : null,
+      fsrsMean: stableWordN ? stableFsrsSum/stableWordN : null,
+      otherMean: stableWordN ? stableOtherSum/stableWordN : null
+    }
+  };
+}
+
 /* ============================== ANALYTICS ============================== */
 const Analytics = {
   charts: {},
@@ -3332,9 +3430,12 @@ const Analytics = {
     // Phase D placement: "This Week" sits above achievements; the milestone wall and
     // personal bests sit below achievements, above the chart grid -- all three are plain
     // HTML/CSS (no Chart.js), so unlike the sections below they render in every branch,
-    // including the Chart-unavailable and empty-word-bank early returns.
+    // including the Chart-unavailable and empty-word-bank early returns. Arm Comparison
+    // (Phase F+1) joins them for the same reason -- it's plain HTML/CSS over
+    // Storage.state.attempts, not a chart, so there's no reason to gate it behind Chart.js
+    // loading or a non-empty word bank; it has its own internal "not enough data" fallbacks.
     let html = this.renderThisWeekSection() + this.renderAchievementsSection() +
-      this.renderMilestoneWall() + this.renderPersonalBests();
+      this.renderMilestoneWall() + this.renderPersonalBests() + this.renderArmComparisonCard();
 
     if(typeof Chart === 'undefined'){
       html += '<div class="card empty-state"><div class="big">📡</div><h2>Charts unavailable</h2>' +
@@ -3516,6 +3617,39 @@ const Analytics = {
 
     return '<div class="card"><h3 style="margin:0 0 6px;">🏆 Personal Bests</h3>' +
       rows.map(r=>'<div class="pb-row"><span class="pb-label">'+Utils.escapeHtml(r.label)+'</span><span class="pb-value">'+r.value+'</span></div>').join('') +
+      '</div>';
+  },
+
+  // Phase F+1: read-only, computed entirely from computeArmComparison (see the pure function's
+  // header comment for the eligibility/anchor/normalization rationale). Hidden entirely when no
+  // taught word has any tracked (legacy or fsrs) attempt yet -- nothing to compare. Once shown,
+  // each metric falls back to its own "not enough data" note rather than hiding piecemeal, so
+  // the section's presence is a stable signal that the feature exists even before a given
+  // number is available.
+  renderArmComparisonCard(){
+    const cmp = computeArmComparison(Storage.state.words || [], Storage.state.attempts || []);
+    if(cmp.legacy.n===0 && cmp.fsrs.n===0) return '';
+
+    const rts = cmp.reviewsToStable;
+    const headline = rts.n>0
+      ? '<div class="achv-stats-grid"><div class="stat good"><div class="num">'+rts.mean.toFixed(1)+'</div><div class="label">Mean Attempts to Stable ('+rts.n+' word'+(rts.n===1?'':'s')+')</div></div></div>'
+      : '<p class="field-hint">Not enough data yet — no word has both reached Stable and logged attempts[] entries before doing so.</p>';
+    const rtsBreakdown = rts.n>0
+      ? '<p class="field-hint">Of that, legacy-tracked ≈'+rts.legacyMean.toFixed(1)+', FSRS-tracked ≈'+rts.fsrsMean.toFixed(1)+', untracked (teaching/writing/exam) ≈'+rts.otherMean.toFixed(1)+' — descriptive only. There is no model here that attributes a word\'s progress to one arm vs. the other within a single word, so this breakdown is not a per-arm outcome.</p>'
+      : '';
+
+    return '<div class="card">' +
+      '<h3 style="margin:0 0 6px;">🧪 Arm Comparison — FSRS-'+cmp.fsrsGeneration+' vs Legacy</h3>' +
+      '<p class="field-hint">Pinned to FSRS-'+cmp.fsrsGeneration+' (ts-fsrs vendored in lib/fsrs-scheduler.js). '+
+      'attempts[].track does not encode the FSRS generation, so a future library upgrade would silently mix generations under the same tag — '+
+      'treat any FSRS-'+(cmp.fsrsGeneration+1)+' migration as a new experiment on top of these results, not a continuation of them.</p>' +
+      '<p class="field-hint">Both regimes run concurrently per word from the moment teaching completes — there is no word-level arm flip, and per-word metrics below exclude words with no tracked attempts in either arm.</p>' +
+      headline + rtsBreakdown +
+      '<div class="achv-stats-grid" style="margin-top:10px;">' +
+      '<div class="stat"><div class="num">'+(cmp.legacy.n>0 ? cmp.legacy.meanInterval.toFixed(1)+'d' : '—')+'</div><div class="label">Legacy Mean Interval ('+cmp.legacy.n+' word'+(cmp.legacy.n===1?'':'s')+')</div></div>' +
+      '<div class="stat"><div class="num">'+(cmp.fsrs.n>0 ? cmp.fsrs.meanInterval.toFixed(1)+'d' : '—')+'</div><div class="label">FSRS Mean Interval ('+cmp.fsrs.n+' word'+(cmp.fsrs.n===1?'':'s')+')</div></div>' +
+      '</div>' +
+      '<p class="field-hint">Legacy intervals are capped at 30 days (WordModel.applyRating); FSRS intervals are uncapped. This is a scheduling design difference, not a finding — read the two numbers as different units, not a race.</p>' +
       '</div>';
   },
 
