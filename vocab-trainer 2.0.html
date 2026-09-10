@@ -1658,6 +1658,11 @@ const App = {
   },
 
   showTab(tab){
+    // Covers leaving the Phase 2 Add flow via a tab-nav click instead of Session's own
+    // _backToSession (e.g. the top tab bar, or any App.showTab(...) call fired while
+    // Session's monkey-patch is live) -- see Session._unpatch's comment for the other call
+    // sites (Session._backToSession, Session.finish). No-op when nothing is patched.
+    Session._unpatch();
     this.currentTab = tab;
     document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
     document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -4029,6 +4034,61 @@ const Session = {
   phase: 0,
   phases: ['Retrieval Review','New Vocabulary','Context / Production','Error Review'],
   log: { reviewed:0, correct:0, newAdded:0, errors:0 },
+  // Stash for the Phase 2 "Add a Word" monkey-patch (see renderPhase's addNowBtn handler /
+  // _patch below). Holds the raw, unbound Views methods -- not bind(Views) copies, since
+  // bind() returns a fresh function every call, and stashing a fresh bound copy on a
+  // re-entry after _unpatch already ran would defeat the point of stashing a stable
+  // reference. The wrapper below calls through with .call(Views, ...) instead.
+  _origHandleSaveWord: null,
+  _origRenderBeginTeaching: null,
+
+  // Wraps Views.handleSaveWord/renderBeginTeaching for the duration of the Phase 2 Add
+  // flow, so a save made from inside the session counts toward this.log.newAdded and
+  // finishing teaching returns to the session instead of wherever Views.renderBeginTeaching
+  // would normally send it. Idempotent: if either field is already stashed, patches are
+  // already live (e.g. "Add a Word" clicked again without an intervening _unpatch), so this
+  // returns without re-stashing -- re-stashing here would capture the *wrapper* as "the
+  // original" and every save would double-wrap from then on.
+  _patch(){
+    if(this._origHandleSaveWord || this._origRenderBeginTeaching) return;
+    this._origHandleSaveWord = Views.handleSaveWord;
+    this._origRenderBeginTeaching = Views.renderBeginTeaching;
+    Views.handleSaveWord = function(form, existing){
+      const before = Storage.state.words.length;
+      Session._origHandleSaveWord.call(Views, form, existing);
+      if(Storage.state.words.length>before) Session.log.newAdded++;
+    };
+    Views.renderBeginTeaching = function(words, onAllComplete){
+      Session._origRenderBeginTeaching.call(Views, words, ()=>Session._backToSession());
+    };
+  },
+
+  // Restores Views.handleSaveWord/renderBeginTeaching to their pre-patch originals.
+  // Null-guarded per field, so a call when nothing (or only one field) is patched is a
+  // no-op rather than overwriting a real method with null. Three call sites reach this:
+  // _backToSession (the normal exit from the Phase 2 Add flow), App.showTab (covers
+  // leaving via any tab button while patches are live), and finish (covers ending the
+  // whole session while patches are live). Each is independently necessary -- don't
+  // remove one thinking it's now redundant with another; each covers an exit path the
+  // others don't reach.
+  _unpatch(){
+    if(this._origHandleSaveWord){ Views.handleSaveWord = this._origHandleSaveWord; this._origHandleSaveWord = null; }
+    if(this._origRenderBeginTeaching){ Views.renderBeginTeaching = this._origRenderBeginTeaching; this._origRenderBeginTeaching = null; }
+  },
+
+  // Normal exit from the Phase 2 Add flow (teaching finished, or the word was saved without
+  // starting teaching -- see Views.renderBeginTeaching's wrapper above). Direct DOM
+  // navigation, same as the rest of this file's tab-switching, not a call through
+  // App.showTab -- so unpatching has to happen here explicitly rather than relying on
+  // App.showTab's own _unpatch call (see _unpatch's comment for the other call sites).
+  _backToSession(){
+    this._unpatch();
+    App.currentTab='practice';
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.getElementById('view-practice').classList.add('active');
+    document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='practice'));
+    Session.renderPhase();
+  },
 
   start(){
     this.active = true; this.phase = 0;
@@ -4067,25 +4127,7 @@ const Session = {
         document.getElementById('view-add').classList.add('active');
         document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='add'));
         Views.renderAddForm();
-        const origRenderBeginTeaching = Views.renderBeginTeaching.bind(Views);
-        const origHandler = Views.handleSaveWord.bind(Views);
-        const backToSession = ()=>{
-          Views.handleSaveWord = origHandler;
-          Views.renderBeginTeaching = origRenderBeginTeaching;
-          App.currentTab='practice';
-          document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-          document.getElementById('view-practice').classList.add('active');
-          document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab==='practice'));
-          Session.renderPhase();
-        };
-        Views.handleSaveWord = function(form, existing){
-          const before = Storage.state.words.length;
-          origHandler(form, existing);
-          if(Storage.state.words.length>before) Session.log.newAdded++;
-        };
-        Views.renderBeginTeaching = function(words, onAllComplete){
-          origRenderBeginTeaching(words, backToSession);
-        };
+        this._patch();
       });
       el.querySelector('#contBtn').addEventListener('click', ()=>this.nextPhase());
     } else if(this.phase===2){
@@ -4139,6 +4181,11 @@ const Session = {
   },
 
   finish(){
+    // Covers ending the session (e.g. via Phase 4's "Skip & Finish") while the Phase 2
+    // Add-flow patch is still live -- doesn't rely on the finish path having gone through
+    // App.showTab first. See _unpatch's comment for the other call sites (_backToSession,
+    // App.showTab).
+    this._unpatch();
     this.active = false;
     // Phase C/D: NOT bumping DailyActivity from this.log at all here. reviews/correct are
     // already covered per-attempt by Practice.handleGraded during the session (this.log is
