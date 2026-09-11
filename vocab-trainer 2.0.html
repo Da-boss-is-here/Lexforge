@@ -1749,11 +1749,16 @@ const App = {
   updateDueBadge(){
     const el = document.getElementById('dueBadge');
     if(!el) return;
-    const words = Storage.state.words;
-    const overdue = words.filter(w=>WordModel.isOverdue(w)).length;
-    const dueToday = words.filter(w=>WordModel.isDueToday(w)).length;
-    const total = overdue + dueToday;
-    el.textContent = total + (total===1 ? ' word due today' : ' words due today');
+    // Same selection Phase 1 (Session.renderPhase) and "Quick Review" (Views.runFreePractice)
+    // actually queue, not WordModel.isOverdue/isDueToday -- those only read word.srs.nextReview
+    // (the legacy scheduler), while FSRS-scheduled dimensions are due via word.fsrs[d].due and
+    // never touch word.srs.nextReview at all. A user whose words were mostly FSRS-tracked could
+    // see "0 words due today" here while a Daily Session opened to "Item 5 of 70." Calling
+    // buildDueQueue directly means this count and the queue it describes can never disagree.
+    // "review(s)", not "word(s)" -- the count is now items, and a word due in two dimensions
+    // (e.g. recognition and production) contributes two.
+    const total = Practice.buildDueQueue({includeNew:false}).length;
+    el.textContent = total + (total===1 ? ' review due today' : ' reviews due today');
   },
 
   applyTheme(){
@@ -1828,9 +1833,19 @@ const Views = {
       html += '<div class="banner ' + (days<=3?'bad':'info') + '">🎯 Exam in ' + (days<0?'the past':days+' day'+(days===1?'':'s')) + ' (' + Utils.fmtDate(examDate) + ') — ' + stages['Exam Ready'] + ' word(s) exam-ready.</div>';
     }
 
-    const dueTotal = overdue.length + dueToday.length;
-    html += '<div class="card hero-card"><h2 class="mt0">'+(dueTotal ? dueTotal+' word'+(dueTotal===1?'':'s')+' ready to review' : 'You\'re caught up')+'</h2>' +
-      '<p class="field-hint" style="margin:-6px 0 14px;">'+(dueTotal ? 'A focused session takes about 10–15 minutes.' : 'Nothing due right now — add a word or get ahead on upcoming reviews.')+'</p>' +
+    // Same selection Phase 1 / Quick Review actually queue -- see App.updateDueBadge's
+    // comment. overdue/dueToday (isOverdue/isDueToday, legacy-scheduler only) stay as they
+    // are for the Today grid's Overdue/Due Today stats below; those are explicitly
+    // legacy-scheduler numbers and still correct as such. This hero card is describing "how
+    // big is the session you're about to start," which is the queue, not the legacy subset
+    // of it.
+    const dueTotal = Practice.buildDueQueue({includeNew:false}).length;
+    // ~30s/item, floored at 2 minutes -- the old static "10-15 minutes" was written for a
+    // bounded legacy-only queue and reads as a lie once an FSRS-heavy word bank pushes the
+    // queue into the dozens or more.
+    const estMinutes = dueTotal ? Math.max(2, Math.round(dueTotal*30/60)) : 0;
+    html += '<div class="card hero-card"><h2 class="mt0">'+(dueTotal ? dueTotal+' review'+(dueTotal===1?'':'s')+' ready' : 'You\'re caught up')+'</h2>' +
+      '<p class="field-hint" style="margin:-6px 0 14px;">'+(dueTotal ? 'A focused session takes about ~'+estMinutes+' minute'+(estMinutes===1?'':'s')+'.' : 'Nothing due right now — add a word or get ahead on upcoming reviews.')+'</p>' +
       '<div class="btn-row">' +
       '<button class="btn primary" id="startDailyBtn">▶ Start Daily Session</button>' +
       '<button class="btn ghost" id="quickDueBtn">Quick Review (Due Only)</button>' +
@@ -4379,6 +4394,10 @@ const Analytics = {
 };
 
 /* ============================== DAILY SESSION FLOW ============================== */
+// Above this many items, Phase 1's due queue is no longer "a focused session" -- see
+// renderPhase's phase-0 branch, which offers a 25-most-urgent option instead of forcing the
+// full queue.
+const MAX_SESSION = 25;
 const Session = {
   active: false,
   phase: 0,
@@ -4472,14 +4491,32 @@ const Session = {
 
     if(this.phase===0){
       const queue = Practice.buildDueQueue({includeNew:false});
+      // Items, not words -- a word due in two dimensions (e.g. recognition and production)
+      // contributes two entries to this queue. ~30s/item, floored at 2 minutes, same estimate
+      // Dashboard's hero card uses -- the old static "~10-15 minutes" was written for a
+      // bounded legacy-only queue and undersells (or lies about) the time an FSRS-heavy
+      // queue actually takes.
+      const estMinutes = queue.length ? Math.max(2, Math.round(queue.length*30/60)) : 0;
+      const long = queue.length > MAX_SESSION;
       el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 1 · Retrieval Review</h2>' +
-        '<p class="field-hint">'+queue.length+' word(s) due or overdue. Aim for ~10–15 minutes.</p>' +
+        '<p class="field-hint">'+queue.length+' review(s) due or overdue'+(queue.length ? ' — about ~'+estMinutes+' minute'+(estMinutes===1?'':'s')+'.' : '.')+'</p>' +
+        (long ? '<div class="banner warn">⚠️ That\'s a long queue for one sitting. Practice just the most urgent items now, or take on the full queue.</div>' : '') +
         '<div class="btn-row" style="justify-content:center;">' +
-        (queue.length ? '<button class="btn primary" id="beginBtn">Begin</button>' : '') +
+        (queue.length===0 ? '' : long
+          ? '<button class="btn primary" id="beginTopBtn">Begin '+MAX_SESSION+' Most Urgent</button><button class="btn ghost" id="beginAllBtn">Begin All ('+queue.length+')</button>'
+          : '<button class="btn primary" id="beginBtn">Begin</button>') +
         '<button class="btn ghost" id="skipBtn">'+(queue.length?'Skip Phase':'Nothing due — Continue')+'</button></div></div></div>';
       el.querySelector('#skipBtn').addEventListener('click', ()=>this.nextPhase());
-      const b = el.querySelector('#beginBtn');
-      if(b) b.addEventListener('click', ()=>this._beginQueue(queue));
+      if(long){
+        // Both routes still go through _beginQueue -- slicing to the top MAX_SESSION
+        // preserves buildDueQueue's own urgency ordering (overdue, sorted by nextReview,
+        // before failedRecent, before dueToday), it's just a prefix of the same queue.
+        el.querySelector('#beginTopBtn').addEventListener('click', ()=>this._beginQueue(queue.slice(0,MAX_SESSION)));
+        el.querySelector('#beginAllBtn').addEventListener('click', ()=>this._beginQueue(queue));
+      } else {
+        const b = el.querySelector('#beginBtn');
+        if(b) b.addEventListener('click', ()=>this._beginQueue(queue));
+      }
     } else if(this.phase===1){
       el.innerHTML = '<div class="practice-wrap">'+nav+'<div class="card center"><h2>Phase 2 · New Vocabulary</h2>' +
         '<p class="field-hint">Add as many (or as few) new words as feels right — there\'s no fixed quota. Build a full Production Record for each.</p>' +
