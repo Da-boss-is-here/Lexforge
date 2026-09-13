@@ -64,7 +64,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL, repairWord, Teaching, Session, computeArmComparison, Exam, CATEGORY_TO_DIM, ERROR_CATEGORIES, Modal };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL, repairWord, Teaching, Session, computeArmComparison, Exam, CATEGORY_TO_DIM, ERROR_CATEGORIES, Modal, Audit };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -1831,6 +1831,44 @@ test('Exam.finishWriting does not throw when the countdown reaches zero before t
 
   assert.equal(E.Exam.status, 'review', 'the exam should still transition to review');
   assert.equal(E.Storage.state.examSession.status, 'review', 'the transition must still be persisted durably');
+});
+
+test('Audit.createReviewItems records wordId on matched writingLog entries and null on unmatched ones', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'lucid', meaning: 'clear and easy to understand', form: 'adjective', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Audit.essayText = 'The explanation was lucid but the argument was flimflam.';
+  E.Audit.tags = [
+    { id: 'tag-1', quoted: 'lucid', word: 'lucid', category: 'Grammar', correction: 'clear' },
+    { id: 'tag-2', quoted: 'flimflam', word: 'flimflam', category: 'Meaning', correction: 'nonsense' }
+  ];
+  // createReviewItems ends by re-drawing (needs a rich container) and, since there's an
+  // unmatched tag, opening the "New Words Found" modal via Modal.show (needs a rich
+  // document.getElementById('modalRoot') too) -- give those two ids a node whose
+  // querySelector/querySelectorAll return further wireable nodes instead of null. Utils.toast
+  // still needs the default sandbox stub's real (no-op) appendChild for 'toastRoot'.
+  const richNode = () => { const n = makeClickNode(); n.querySelector = () => richNode(); n.querySelectorAll = () => []; return n; };
+  const container = richNode();
+  const modalRoot = richNode();
+  const origGetElementById = ctx.document.getElementById.bind(ctx.document);
+  ctx.document.getElementById = id => id === 'modalRoot' ? modalRoot : origGetElementById(id);
+  E.Audit.container = container;
+
+  E.Audit.createReviewItems();
+
+  const entry = E.Storage.state.writingLog[E.Storage.state.writingLog.length - 1];
+  const matchedErr = entry.errors.find(e => e.word === 'lucid');
+  const unmatchedErr = entry.errors.find(e => e.word === 'flimflam');
+
+  assert.equal(matchedErr.wordId, word.id, 'a matched tag should record the real word\'s id');
+  assert.equal(matchedErr.matched, true);
+  assert.equal(unmatchedErr.wordId, null, 'an unmatched tag should record wordId: null');
+  assert.equal(unmatchedErr.matched, false);
 });
 
 test('Practice.restore remaps savedIdx through originalToNew, so returnToCurrent lands on the right card after a queued word was deleted', () => {

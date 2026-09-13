@@ -3227,7 +3227,7 @@ const Modal = {
 /* ============================== WEEKLY WRITING AUDIT ============================== */
 const Audit = {
   essayText: '',
-  tags: [], // {id, start, end, quoted, word, category, correction}
+  tags: [], // {id, quoted, word, category, correction}
   container: null,
 
   render(container){
@@ -3312,7 +3312,7 @@ const Audit = {
           if(!word){ errEl.textContent='Enter the vocabulary word this error is about.'; return; }
           if(!cat){ errEl.textContent='Choose an error category.'; return; }
           if(!correction){ errEl.textContent='Enter the corrected version.'; return; }
-          this.tags.push({ id: Utils.uid(), start, end, quoted, word, category: cat, correction });
+          this.tags.push({ id: Utils.uid(), quoted, word, category: cat, correction });
           Modal.close();
           this.draw();
         });
@@ -3323,14 +3323,16 @@ const Audit = {
     if(this.tags.length===0) return;
     const matchedCount = { n:0 };
     const unmatched = [];
+    const resolved = [];
     this.tags.forEach(t=>{
       const w = WordModel.findByText(t.word);
       if(w){ ErrorIntegration.recordProductionError(w, t.category, 'audit-review'); matchedCount.n++; }
       else unmatched.push(t);
+      resolved.push({ tag:t, w });
     });
     Storage.state.writingLog.push({
       ts: Date.now(), date: Utils.todayISO(), text: this.essayText,
-      errors: this.tags.map(t=>({ quoted:t.quoted, word:t.word, category:t.category, correction:t.correction, matched: !!WordModel.findByText(t.word) }))
+      errors: resolved.map(({tag:t, w})=>({ quoted:t.quoted, word:t.word, wordId: w ? w.id : null, category:t.category, correction:t.correction, matched: !!w }))
     });
     Storage.save();
 
