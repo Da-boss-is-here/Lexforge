@@ -2325,3 +2325,42 @@ test('Storage.importJSON merge mode dedupes incoming words sharing an id, not ju
   assert.equal(E.Storage.state.words.length, 2,
     'two incoming entries sharing an id should merge in as one, alongside the untouched local word');
 });
+
+test('Views.renderDashboard only counts taught words as Overdue/Due Today, matching the hero card\'s buildDueQueue-derived total', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+
+  // A partially-taught word: has a teaching-phase history entry (history.length>0) and a
+  // stale nextReview (still sitting at WordModel.create's creation-day default, now in the
+  // past), but teaching.completed is still false. WordModel.isOverdue only checks
+  // history.length>0 and nextReview<today -- it doesn't know teaching-phase entries aren't
+  // retrieval attempts -- so this word satisfies isOverdue despite never having entered
+  // Practice.buildDueQueue's taught-only pool.
+  const untaught = E.WordModel.create({
+    word: 'unfinished', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], wordType: 'general'
+  });
+  untaught.history.push({ ts: 1, date: E.Utils.addDays(E.Utils.todayISO(), -1), level: 0, correct: true, phase: 'teaching' });
+  untaught.srs.nextReview = E.Utils.addDays(E.Utils.todayISO(), -1);
+  E.Storage.state.words.push(untaught);
+
+  const nodes = {};
+  const makeNode = () => ({
+    innerHTML: '', style: {}, dataset: {}, classList: { add(){}, remove(){}, toggle(){} },
+    addEventListener(){}, querySelector(){ return makeNode(); }, querySelectorAll(){ return []; }
+  });
+  const root = makeNode();
+  ctx.document.getElementById = id => { if(!nodes[id]) nodes[id] = (id==='view-dashboard' ? root : makeNode()); return nodes[id]; };
+
+  E.Views.renderDashboard();
+
+  const overdueMatch = root.innerHTML.match(/<div class="num">(\d+)<\/div><div class="label">Overdue<\/div>/);
+  assert.ok(overdueMatch, 'the Today grid should render an Overdue stat');
+  assert.equal(overdueMatch[1], '0', 'a partially-taught word must not be counted as Overdue in the Dashboard grid');
+
+  const dueTotal = E.Practice.buildDueQueue({ includeNew: false }).length;
+  assert.equal(dueTotal, 0, 'the untaught word should not appear in the hero card\'s due-queue total either');
+  assert.ok(root.innerHTML.includes('You&#39;re caught up') || root.innerHTML.includes("You're caught up"),
+    'the hero card should agree with the grid and show "caught up"');
+});
+

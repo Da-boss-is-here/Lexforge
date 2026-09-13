@@ -2006,8 +2006,14 @@ const Views = {
       el.querySelector('#goAddBtn').addEventListener('click', ()=>App.showTab('add'));
       return;
     }
-    const overdue = words.filter(w=>WordModel.isOverdue(w));
-    const dueToday = words.filter(w=>WordModel.isDueToday(w));
+    // Matches Practice Home's overdue/due (see renderPracticeHome) -- isOverdue/isDueToday
+    // gate on word.history.length>0, which teaching-phase attempts alone satisfy, so an
+    // un-taught word with a stale nextReview (still sitting at WordModel.create's
+    // creation-day default) can read as "overdue" here despite buildDueQueue's pool -- and
+    // therefore the hero card's dueTotal above -- excluding it until teaching completes.
+    const taught = words.filter(w=>w.teaching && w.teaching.completed);
+    const overdue = taught.filter(w=>WordModel.isOverdue(w));
+    const dueToday = taught.filter(w=>WordModel.isDueToday(w));
     const awaitingTeaching = words.filter(w=>!w.teaching || !w.teaching.completed);
     const stages = { New:0, Learning:0, Unstable:0, Stable:0, 'Exam Ready':0 };
     words.forEach(w=> stages[WordModel.computeMastery(w)]++ );
@@ -2037,11 +2043,10 @@ const Views = {
     }
 
     // Same selection Phase 1 / Quick Review actually queue -- see App.updateDueBadge's
-    // comment. overdue/dueToday (isOverdue/isDueToday, legacy-scheduler only) stay as they
-    // are for the Today grid's Overdue/Due Today stats below; those are explicitly
-    // legacy-scheduler numbers and still correct as such. This hero card is describing "how
-    // big is the session you're about to start," which is the queue, not the legacy subset
-    // of it.
+    // comment. overdue/dueToday (isOverdue/isDueToday, legacy-scheduler only, taught-only
+    // per the fix above) stay separate for the Today grid's Overdue/Due Today stats below;
+    // those are explicitly legacy-scheduler numbers. This hero card is describing "how big
+    // is the session you're about to start," which is the queue, not the legacy subset of it.
     const dueTotal = Practice.buildDueQueue({includeNew:false}).length;
     // ~30s/item, floored at 2 minutes -- the old static "10-15 minutes" was written for a
     // bounded legacy-only queue and reads as a lie once an FSRS-heavy word bank pushes the
