@@ -1871,6 +1871,35 @@ test('Audit.createReviewItems records wordId on matched writingLog entries and n
   assert.equal(unmatchedErr.matched, false);
 });
 
+test('App.init flushes a debounced config-phase Exam edit on visibilitychange, not just running/review', () => {
+  const { ctx, exports: E } = buildSandbox();
+
+  // App.init touches a lot (applyTheme, restore(), tab wiring, renderDashboard via showTab) --
+  // give every getElementById lookup a node rich enough to survive it. With no words in the
+  // bank, renderDashboard takes its empty-state early-return branch, so this stays cheap.
+  const richNode = () => { const n = makeClickNode(); n.querySelector = () => richNode(); n.querySelectorAll = () => []; return n; };
+  ctx.document.getElementById = () => richNode();
+  ctx.document.documentElement = { removeAttribute(){}, setAttribute(){} };
+  ctx.addEventListener = () => {}; // window.addEventListener('beforeunload', ...)
+
+  const docHandlers = {};
+  ctx.document.addEventListener = (ev, fn) => { docHandlers[ev] = fn; };
+
+  E.App.init();
+  assert.ok(docHandlers.visibilitychange, 'App.init should register a visibilitychange handler');
+
+  E.Exam.status = 'config';
+  E.Exam.prompt = 'A freshly edited prompt';
+  E.Exam.persist(); // debounced (500ms) -- not yet flushed to Storage.state.examSession
+  assert.equal(E.Storage.state.examSession, null, 'sanity: the debounced edit should not be persisted yet');
+
+  ctx.document.visibilityState = 'hidden';
+  docHandlers.visibilitychange();
+
+  assert.ok(E.Storage.state.examSession, 'a config-phase edit should be flushed on visibilitychange, not silently dropped');
+  assert.equal(E.Storage.state.examSession.prompt, 'A freshly edited prompt');
+});
+
 test('Practice.restore remaps savedIdx through originalToNew, so returnToCurrent lands on the right card after a queued word was deleted', () => {
   const { exports: E } = buildSandbox();
   E.Storage.load();

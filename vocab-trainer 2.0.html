@@ -1927,18 +1927,17 @@ const App = {
     });
     // Force-flush the exam's debounced persist() on the two moments a page can disappear
     // without warning -- a backgrounded/closed tab (visibilitychange) and an actual unload
-    // (beforeunload) -- so a running exam never loses more than the last keystroke instead of
-    // up to persist()'s 500ms debounce window. Only relevant while running (that's the only
-    // status persist() debounces at meaningfully-frequent input); other statuses have already
-    // been flushed synchronously at their own transitions.
+    // (beforeunload) -- so an in-progress exam never loses more than the last keystroke
+    // instead of up to persist()'s 500ms debounce window. Covers every status that debounces
+    // through persist() at meaningfully-frequent input -- 'config' (prompt/custom-minutes
+    // edits, Reshuffle Words), 'running' (the essay textarea), and 'review' (the
+    // checklist/category buttons in drawReview); 'done' and any other status have already been
+    // flushed synchronously at their own transitions.
     document.addEventListener('visibilitychange', ()=>{
-      // 'review' also debounces via persist() (the checklist/category button handlers in
-      // drawReview) -- without this, a tick made just before closing the tab is lost the same
-      // way a mid-typing 'running' edit would be.
-      if(document.visibilityState==='hidden' && (Exam.status==='running' || Exam.status==='review')) Exam._flushPersist();
+      if(document.visibilityState==='hidden' && (Exam.status==='config' || Exam.status==='running' || Exam.status==='review')) Exam._flushPersist();
     });
     window.addEventListener('beforeunload', ()=>{
-      if(Exam.status==='running' || Exam.status==='review') Exam._flushPersist();
+      if(Exam.status==='config' || Exam.status==='running' || Exam.status==='review') Exam._flushPersist();
     });
     // Session.active can be true with Practice.session null (an interstitial screen, not a
     // graded queue) -- route to the practice tab for that case too, same condition showTab's
