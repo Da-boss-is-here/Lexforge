@@ -1809,6 +1809,30 @@ test('Exam.restore both subtracts elapsed wall-clock time AND restarts the count
   assert.equal(E.Exam.remainingSec, 530, 'the timer should now be running, so 10 further ticks bring it down by 10 more');
 });
 
+test('Exam.finishWriting does not throw when the countdown reaches zero before the user ever opens the Writing tab', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+
+  E.Storage.state.examSession = {
+    status: 'running', prompt: 'Write about X', minutes: 10, text: 'draft so far',
+    remainingSec: 1, lastTickAt: Date.now(), targetWordIds: [], checklist: {}
+  };
+
+  let tickFn = null;
+  ctx.setInterval = (fn) => { tickFn = fn; return 1; };
+  ctx.clearInterval = () => { tickFn = null; };
+
+  // Restore, but never call Exam.render() -- Exam.container stays null, matching a user who
+  // hasn't opened the Writing tab since the countdown was restored.
+  E.Exam.restore();
+  assert.equal(E.Exam.container, null, 'sanity: container should still be unset');
+
+  assert.doesNotThrow(() => tickFn(), 'the countdown reaching zero with no container must not throw');
+
+  assert.equal(E.Exam.status, 'review', 'the exam should still transition to review');
+  assert.equal(E.Storage.state.examSession.status, 'review', 'the transition must still be persisted durably');
+});
+
 test('Practice.restore remaps savedIdx through originalToNew, so returnToCurrent lands on the right card after a queued word was deleted', () => {
   const { exports: E } = buildSandbox();
   E.Storage.load();

@@ -3622,7 +3622,10 @@ const Exam = {
   finishWriting(){
     this.status='review';
     this._flushPersist(); // state transition -- durable immediately
-    this.render(this.container);
+    // Guarded: restore() starts the countdown (see its own comment) without Exam.render() ever
+    // having run, so the timer can reach zero here while the user has never opened the Writing
+    // tab -- container is still null. The durable half above must still run either way.
+    if(this.container) this.render(this.container);
   },
 
   drawReview(){
