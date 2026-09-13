@@ -93,7 +93,7 @@ _(scanned 2026-09-12, no findings)_
 _(scanned 2026-09-12, T1–T6 fixed)_
 
 ## Session
-_(not yet scanned)_
+_(scanned 2026-09-13, S1 fixed)_
 
 ## Exam + Audit
 _(not yet scanned)_
