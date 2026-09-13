@@ -96,7 +96,7 @@ _(scanned 2026-09-12, T1–T6 fixed)_
 _(scanned 2026-09-13, S1 fixed)_
 
 ## Exam + Audit
-_(not yet scanned)_
+_(scanned 2026-09-13, E1/E2/A1/A2 fixed)_
 
 ## Views
 _(not yet scanned)_
@@ -106,3 +106,8 @@ _(not yet scanned)_
 
 ## CROSS-SECTION
 _(none yet)_
+
+## Future
+- Audit has no persistence — an in-progress essay and its tags are
+  lost on refresh, unlike Practice/Session/Exam. Feature gap, not a
+  defect.
