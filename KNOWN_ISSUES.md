@@ -99,7 +99,7 @@ _(scanned 2026-09-13, S1 fixed)_
 _(scanned 2026-09-13, E1/E2/A1/A2 fixed)_
 
 ## Views
-_(not yet scanned)_
+_(scanned 2026-09-13, no findings)_
 
 ## Analytics
 _(not yet scanned)_
@@ -111,3 +111,8 @@ _(none yet)_
 - Audit has no persistence — an in-progress essay and its tags are
   lost on refresh, unlike Practice/Session/Exam. Feature gap, not a
   defect.
+- _pruneDeletedWord has no Teaching block, but the abandonment path
+  it would guard is unreachable: navigating away from Teaching
+  discards the session (no resume mechanism), and any orphaned
+  reference is inert until the next Teaching.startQueue overwrites it.
+  Not a defect. Revisit if Teaching ever gains a resume path.
