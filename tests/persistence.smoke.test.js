@@ -2364,3 +2364,18 @@ test('Views.renderDashboard only counts taught words as Overdue/Due Today, match
     'the hero card should agree with the grid and show "caught up"');
 });
 
+test('Practice.buildProductionQueue excludes a word with a level-4 history entry dated today (Fix B investigation)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'excludeme', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  word.history.push({ ts: 1, date: E.Utils.todayISO(), level: 4, correct: true });
+  E.Storage.state.words.push(word);
+
+  const queue = E.Practice.buildProductionQueue(8);
+  assert.ok(!queue.some(item => item.word.id === word.id),
+    'a word already graded at level 4 today must not be re-offered by buildProductionQueue');
+});
