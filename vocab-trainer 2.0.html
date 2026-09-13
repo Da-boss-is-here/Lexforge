@@ -5523,21 +5523,33 @@ const Teaching = {
       }
     } else {
       this.state.retry = (this.state.retry||0)+1;
+      // T6: log the failed attempt immediately, mirroring the success branch above. Previously
+      // this only happened once a category was picked below, so clicking the global "← Back"
+      // button first silently dropped the failed attempt -- no history entry, no dim fail --
+      // instead of counting it like every other outcome path does.
+      if(!this.state.stepLogged.has(this.state.step)){
+        WordModel.logAttempt(word, 0, false, { phase:'teaching', step:this.state.step });
+        Storage.save();
+        this.state.stepLogged.add(this.state.step);
+      }
       feedbackEl.innerHTML = '<div class="feedback incorrect">✗ Not quite.' +
         (opts.correctAnswerText ? '<div class="correct-answer">Correct: '+Utils.escapeHtml(opts.correctAnswerText)+'</div>' : '') + '</div>' +
         '<div class="practice-sub" style="margin-top:10px;">What kind of error was this?</div>' +
         '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
       const failCatBtns = Array.from(feedbackEl.querySelectorAll('.error-cats button'));
+      // Distinct key from the plain step-number key above: the attempt is already logged by
+      // the time these buttons exist, so gating the category diagnostic on that same key would
+      // make it never fire at all -- this is a separate logical write about the same step.
+      const catKey = this.state.step + '-cat';
       failCatBtns.forEach(btn=>{
         btn.addEventListener('click', ()=>{
           failCatBtns.forEach(b=>b.disabled=true);
           const cat = btn.dataset.c;
-          if(!this.state.stepLogged.has(this.state.step)){
+          if(!this.state.stepLogged.has(catKey)){
             WordModel.logError(word, cat, 0);
-            WordModel.logAttempt(word, 0, false, { phase:'teaching', step:this.state.step, errorCategory:cat });
             word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: cat });
             Storage.save();
-            this.state.stepLogged.add(this.state.step);
+            this.state.stepLogged.add(catKey);
           }
           const secondFailure = this.state.retry>=2;
           feedbackEl.innerHTML = '<div class="diag-box"><b>'+cat+' error.</b><div class="expl">'+ERROR_EXPLANATIONS[cat]+'</div></div>' +
@@ -5548,7 +5560,7 @@ const Teaching = {
           const adv = feedbackEl.querySelector('#advanceBtn');
           if(adv) adv.addEventListener('click', ()=>this.goStep(this.state.step+1));
           const rt = feedbackEl.querySelector('#retryBtn');
-          if(rt) rt.addEventListener('click', ()=>{ this.state.step4Data=null; this.state.step6Data=null; this.state.stepLogged.delete(this.state.step); this.render(); });
+          if(rt) rt.addEventListener('click', ()=>{ this.state.step4Data=null; this.state.step6Data=null; this.state.stepLogged.delete(this.state.step); this.state.stepLogged.delete(catKey); this.render(); });
         });
       });
     }

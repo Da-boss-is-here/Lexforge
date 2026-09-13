@@ -1693,6 +1693,94 @@ test('Teaching.state.stepLogged blocks a step-4 answer replayed via Back -> Forw
   assert.equal(word.dims.meaningRecognition.success, 2, 'an explicit retry is a deliberate new attempt and should count');
 });
 
+test('Teaching.handleStepOutcome logs a step-6 failure immediately, so clicking Back before picking a category does not drop the attempt', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'ponder', meaning: 'to think carefully about something', form: 'verb', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 6, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const nodes = {};
+  const feedbackNode = makeClickNode();
+  feedbackNode.querySelectorAll = sel => sel === '.error-cats button' ? [] : [];
+  ctx.document.getElementById = id => {
+    if (id === 'teachFeedback') return feedbackNode;
+    if (!nodes[id]) nodes[id] = makeClickNode();
+    return nodes[id];
+  };
+
+  E.Teaching.handleStepOutcome(false, { correctAnswerText: 'x' });
+  E.Teaching.goBack(); // clicks the global "<- Back" button instead of ever picking a category
+
+  const teachingEntries = word.history.filter(h => h.phase === 'teaching');
+  assert.equal(teachingEntries.length, 1, 'the failed attempt should be logged even though no category was ever picked');
+  assert.equal(teachingEntries[0].correct, false);
+  assert.ok(Object.values(word.dims).every(d => d.fail === 0), 'no dim fail should be written until a category is chosen');
+});
+
+test('Teaching.handleStepOutcome does not add a second history entry when a category is picked after the failure was already logged', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'ponder', meaning: 'to think carefully about something', form: 'verb', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 6, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const catButtons = E.ERROR_CATEGORIES.map(c => { const n = makeClickNode(); n.dataset = { c }; return n; });
+  const feedbackNode = makeClickNode();
+  feedbackNode.querySelectorAll = sel => sel === '.error-cats button' ? catButtons : [];
+  const nodes = { teachFeedback: feedbackNode };
+  ctx.document.getElementById = id => { if (!nodes[id]) nodes[id] = makeClickNode(); return nodes[id]; };
+
+  E.Teaching.handleStepOutcome(false, { correctAnswerText: 'x' });
+
+  const cat = E.ERROR_CATEGORIES[0];
+  catButtons[0].click(); // pick a category after the failure was already logged on entry
+
+  const teachingEntries = word.history.filter(h => h.phase === 'teaching');
+  assert.equal(teachingEntries.length, 1, 'picking a category must not add a second history entry for the same failed attempt');
+
+  const dimKey = E.CATEGORY_TO_DIM[cat];
+  assert.equal(word.dims[dimKey].fail, 1, 'picking a category should still record the category-specific dim fail');
+  assert.equal(word.teaching.errorHistory.length, 1);
+});
+
+test('Teaching.state.stepLogged blocks a step-6 failure replayed via Back -> Forward from double-logging the attempt', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'ponder', meaning: 'to think carefully about something', form: 'verb', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 6, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const nodes = {};
+  const feedbackNode = makeClickNode();
+  feedbackNode.querySelectorAll = sel => sel === '.error-cats button' ? [] : [];
+  ctx.document.getElementById = id => {
+    if (id === 'teachFeedback') return feedbackNode;
+    if (!nodes[id]) nodes[id] = makeClickNode();
+    return nodes[id];
+  };
+
+  E.Teaching.handleStepOutcome(false, { correctAnswerText: 'x' }); // first failure, logs one entry
+  E.Teaching.goBack();   // step 5
+  E.Teaching.goStep(6);  // back to step 6 -- stepLogged still has 6 from before, never cleared
+  E.Teaching.handleStepOutcome(false, { correctAnswerText: 'x' }); // replayed failure
+
+  const teachingEntries = word.history.filter(h => h.phase === 'teaching');
+  assert.equal(teachingEntries.length, 1, 'replaying the same already-logged failure via Back -> Forward must not double-count');
+});
+
 test('Exam.restore both subtracts elapsed wall-clock time AND restarts the countdown timer, so time is not frozen until the user opens the Writing tab', () => {
   const { ctx, exports: E } = buildSandbox();
   E.Storage.load();
