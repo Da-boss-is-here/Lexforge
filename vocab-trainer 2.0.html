@@ -737,7 +737,7 @@ function validateAndRepair(raw){
   if(Array.isArray(raw.words)){
     out.words = raw.words.filter(w=>w && typeof w==='object' && w.word).map(repairWord).filter(Boolean);
   }
-  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category) && isValidDateStr(e.date));
+  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category) && isValidDateStr(e.date) && typeof e.ts==='number' && !Number.isNaN(e.ts));
   if(raw.settings && typeof raw.settings==='object'){
     // Repairs to null (the documented "no exam set" default), not to today: every consumer
     // already guards on `if(examDate)`, whereas inventing a date would silently compress every
@@ -991,7 +991,7 @@ const Storage = {
     } else {
       const existingIds = new Set(this.state.words.map(w=>w.id));
       const merged = this.state.words.slice();
-      incoming.words.forEach(w=>{ if(!existingIds.has(w.id)) merged.push(w); });
+      incoming.words.forEach(w=>{ if(!existingIds.has(w.id)){ merged.push(w); existingIds.add(w.id); } });
       this.state.words = merged;
       this.state.errorLog = this.state.errorLog.concat(incoming.errorLog);
       if(incoming.settings.examDate) this.state.settings.examDate = incoming.settings.examDate;
@@ -1056,6 +1056,7 @@ const Storage = {
           };
         });
       }
+      this.state.dailyActivityBackfilledAt = this.state.dailyActivityBackfilledAt || incoming.dailyActivityBackfilledAt || Date.now();
     }
     this.save();
     return true;

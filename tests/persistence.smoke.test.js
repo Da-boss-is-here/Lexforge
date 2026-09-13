@@ -2265,3 +2265,63 @@ test('renderAchievementsSection keeps an achievement unlocked once earned, even 
   assert.ok(!cardBody.includes('🔒 Locked'),
     'an earned achievement must not show the Locked badge after the metric regresses');
 });
+
+test('validateAndRepair drops an errorLog entry with a non-numeric ts (F4)', () => {
+  const { exports: E } = buildSandbox();
+  const repaired = E.validateAndRepair({
+    version: 2, words: [], settings: {},
+    errorLog: [{ category: 'Meaning', date: '2026-01-01', ts: NaN }],
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.errorLog.length, 0, 'an errorLog entry with a non-numeric ts must be dropped');
+});
+
+test('Storage.importJSON merge mode unions dailyActivityBackfilledAt instead of leaving a null local marker (F5)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.words.push(E.WordModel.create({
+    word: 'local-anchor', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], wordType: 'general'
+  }));
+  E.Storage.state.dailyActivityBackfilledAt = null;
+
+  const incoming = JSON.stringify({
+    version: 2,
+    words: [{
+      id: 'w-imported', word: 'imported-anchor', meaning: 'm', form: '', grammar: '', collocations: [],
+      contrast: '', contexts: [], production: '', cloze: [], created: '2025-01-01',
+      history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} }
+    }],
+    errorLog: [], settings: {}, sessionLog: [], writingLog: [], examLog: [], practiceSession: null,
+    dailyActivityBackfilledAt: 1234
+  });
+
+  const ok = E.Storage.importJSON(incoming, 'merge');
+  assert.ok(ok, 'merge import should succeed');
+  assert.equal(E.Storage.state.dailyActivityBackfilledAt, 1234,
+    'a null local marker should adopt the incoming backfilledAt rather than staying null');
+});
+
+test('Storage.importJSON merge mode dedupes incoming words sharing an id, not just against local ids (F6)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.words = [{ id: 'a', word: 'alpha' }];
+
+  const dupWord = {
+    id: 'b', word: 'beta', meaning: 'm', form: '', grammar: '', collocations: [],
+    contrast: '', contexts: [], production: '', cloze: [], created: '2025-01-01',
+    history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+    teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} }
+  };
+  const incoming = JSON.stringify({
+    version: 2,
+    words: [dupWord, dupWord],
+    errorLog: [], settings: {}, sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+
+  const ok = E.Storage.importJSON(incoming, 'merge');
+  assert.ok(ok, 'merge import should succeed');
+  assert.equal(E.Storage.state.words.length, 2,
+    'two incoming entries sharing an id should merge in as one, alongside the untouched local word');
+});
