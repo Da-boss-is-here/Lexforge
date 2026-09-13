@@ -102,7 +102,31 @@ _(scanned 2026-09-13, E1/E2/A1/A2 fixed)_
 _(scanned 2026-09-13, no findings)_
 
 ## Analytics
-_(not yet scanned)_
+_(scanned 2026-09-13, A1 fixed; A2/A3 deferred)_
+
+- [ ] **P3** — `computeArmComparison`'s `reviewsToStable` averages fully-
+      and partially-observed words together. `attempts[]` is a rolling
+      window (cap 15000); for an old word whose earliest attempts were
+      trimmed, `upToStable.length` undercounts and drags the headline
+      mean down. The `upToStable.length > 0` guard only excludes words
+      trimmed entirely.
+      Found: 2026-09-13. Location: `computeArmComparison`, ~4117.
+      Fix: exclude words whose `firstMasteryAt` predates `attempts[0].ts`,
+      plus a card note that the metric covers only in-window words.
+
+- [ ] **P3** — `validReviewEntries` accepts any finite `predictedR`, not
+      just [0,1]. Every `CALIBRATION_BUCKETS` bin rejects out-of-range
+      values, so `hasCalibrationData` (which is `brier.n`) can clear the
+      20-entry gate while the scatter chart draws zero points.
+      `computeRetentionByInterval` has the same shape with negative
+      `elapsedDays`.
+      Found: 2026-09-13. Location: `validReviewEntries` ~3764, and the
+      mirrored `retentionN` count at ~4246.
+      Not producible by the app (`gradeFsrs` always writes in-range);
+      only bites on a corrupt/hand-edited import.
+      Fix: add `predictedR>=0 && predictedR<=1` to `validReviewEntries`,
+      and `elapsedDays>=0` to both the `computeRetentionByInterval` filter
+      and the `retentionN` count (they must stay identical).
 
 ## CROSS-SECTION
 _(none yet)_
@@ -111,6 +135,12 @@ _(none yet)_
 - Audit has no persistence — an in-progress essay and its tags are
   lost on refresh, unlike Practice/Session/Exam. Feature gap, not a
   defect.
+- `repairWord` validates date format but not plausibility; an imported
+  word with a future `created` date collapses `buildLearningProgressData`
+  to zero labels (the `while cursor<=today` loop exits immediately).
+  Root cause is `repairWord`; defensive fix could go in either place.
+  Found: 2026-09-13. Location: `repairWord` / `buildLearningProgressData`.
+  Only reachable via corrupt import or user clock changes.
 - _pruneDeletedWord has no Teaching block, but the abandonment path
   it would guard is unreachable: navigating away from Teaching
   discards the session (no resume mechanism), and any orphaned
