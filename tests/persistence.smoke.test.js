@@ -64,7 +64,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL, repairWord, Teaching, Session, computeArmComparison, Exam, CATEGORY_TO_DIM, ERROR_CATEGORIES };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL, repairWord, Teaching, Session, computeArmComparison, Exam, CATEGORY_TO_DIM, ERROR_CATEGORIES, Modal };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -1985,6 +1985,71 @@ test('Session.renderPhase Phase 4 excludes a word whose teaching is not complete
   const queueWords = captured.map(item => item.word.word);
   assert.equal(queueWords.length, 1, 'the untaught word should not enter Phase 4 retrieval practice');
   assert.equal(queueWords[0], 'beta', 'only the word whose teaching is complete should be queued');
+});
+
+// Shared DOM stub for the Session.start tests below: renderPhase's phase-0 screen wires
+// #skipBtn via el.querySelector(...).addEventListener -- give it a node that records handlers
+// instead of the shared fake element's querySelector, which always returns null.
+function stubPracticeView(ctx) {
+  ctx.document.getElementById = () => ({
+    innerHTML: '', classList: { add(){}, remove(){}, toggle(){} },
+    querySelector: () => ({ addEventListener: () => {} })
+  });
+}
+
+test('Session.start confirms before clearing a live Practice.session, then starts the Daily Session clean', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  stubPracticeView(ctx);
+
+  E.Practice.session = { queue: [{}], idx: 0, results: [{ correct: true }], mode: 'free' };
+  E.Storage.state.practiceSession = { queue: [], idx: 0, results: [], mode: 'free' };
+
+  let confirmCalls = 0;
+  E.Modal.confirm = (msg, cb) => { confirmCalls++; cb(); };
+
+  E.Session.start();
+
+  assert.equal(confirmCalls, 1, 'a live Practice.session should trigger exactly one confirm');
+  assert.equal(E.Practice.session, null, 'confirming should clear the in-memory Practice.session');
+  assert.equal(E.Storage.state.practiceSession, null, 'confirming should clear the persisted practiceSession too');
+  assert.equal(E.Session.active, true, 'the Daily Session should start once the stale session is cleared');
+});
+
+test('Session.start leaves everything untouched if the user cancels the confirm', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  stubPracticeView(ctx);
+
+  const staleSession = { queue: [{}], idx: 0, results: [{ correct: true }], mode: 'free' };
+  E.Practice.session = staleSession;
+  E.Storage.state.practiceSession = { queue: [], idx: 0, results: [], mode: 'free' };
+
+  let confirmCalls = 0;
+  E.Modal.confirm = (msg, cb) => { confirmCalls++; }; // Cancel: never invoke cb
+
+  E.Session.start();
+
+  assert.equal(confirmCalls, 1, 'a live Practice.session should still trigger exactly one confirm');
+  assert.equal(E.Session.active, false, 'cancelling must not start the Daily Session');
+  assert.equal(E.Practice.session, staleSession, 'cancelling must leave the live Practice.session untouched');
+  assert.notEqual(E.Storage.state.practiceSession, null, 'cancelling must leave the persisted practiceSession untouched');
+});
+
+test('Session.start does not confirm at all when there is no live Practice.session', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  stubPracticeView(ctx);
+
+  E.Practice.session = null;
+
+  let confirmCalls = 0;
+  E.Modal.confirm = () => { confirmCalls++; };
+
+  E.Session.start();
+
+  assert.equal(confirmCalls, 0, 'a clean start should never show a confirm dialog');
+  assert.equal(E.Session.active, true);
 });
 
 test('repairWord rejects a whitespace-only word, and Teaching.wireStep5 tolerates a null word', () => {

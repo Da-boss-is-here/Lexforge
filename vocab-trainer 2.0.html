@@ -4882,11 +4882,24 @@ const Session = {
   },
 
   start(){
-    this.active = true; this.phase = 0;
-    this.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
-    this.persist();
-    App.showTab('practice');
-    this.renderPhase();
+    // Same confirm-before-overwrite guard as _beginQueue/Views.runFreePractice/
+    // runDimensionPractice/runProductionDrills -- #startDailyBtn used to call this
+    // unconditionally, so a live standalone Practice.session survived a Daily Session start
+    // untouched: Skip Phase would advance past it, and finishing the stale card later would
+    // misroute into finishPhase with that unrelated queue's results. Cancelling here leaves
+    // both the live Practice.session and Session's own state untouched -- active is not set,
+    // nothing is persisted, and there's no navigation.
+    const proceed = ()=>{
+      Practice.session = null;
+      Practice.clearPersisted();
+      this.active = true; this.phase = 0;
+      this.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
+      this.persist();
+      App.showTab('practice');
+      this.renderPhase();
+    };
+    if(Practice.session) Modal.confirm('You have a practice session in progress. Start the Daily Session instead and lose your progress on the current one?', proceed);
+    else proceed();
   },
 
   // Same confirm-before-overwrite guard as Views.runFreePractice/runProductionDrills/
