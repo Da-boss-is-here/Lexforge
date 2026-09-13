@@ -4531,7 +4531,8 @@ const Analytics = {
     const { streak, examReadyCount } = ctx;
 
     const cards = this.ACHIEVEMENTS.map(a=>{
-      const unlocked = a.check(ctx);
+      const rec = Storage.state.achievements[a.id];
+      const unlocked = a.check(ctx) || !!(rec && rec.unlockedAt);
       const progress = (!unlocked && a.metric && a.target) ? '<div class="achv-progress"><div class="achv-progress-bar" style="width:'+Math.round(Utils.clamp(a.metric(ctx)/a.target,0,1)*100)+'%"></div></div><div class="achv-progress-label">'+Math.min(a.metric(ctx),a.target)+'/'+a.target+' '+Utils.escapeHtml(a.unit||'')+'</div>' : '';
       return '<div class="achv-card '+(unlocked?'unlocked':'locked')+'">' +
         '<div class="icon">'+a.icon+'</div>' +

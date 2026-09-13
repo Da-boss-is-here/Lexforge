@@ -2234,3 +2234,34 @@ test('word.srs.lastPracticed, word.firstRetrieval, attempts[].date, and *Log[].d
   assert.doesNotThrow(() => E.computeArmComparison(E.Storage.state.words, E.Storage.state.attempts));
   assert.doesNotThrow(() => E.computeFirstPostTeachingRetention(E.Storage.state.words));
 });
+
+test('renderAchievementsSection keeps an achievement unlocked once earned, even after the underlying metric regresses (A1)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+
+  const today = E.Utils.todayISO();
+  for (let i = 0; i < 7; i++) {
+    E.Storage.state.dailyActivity[E.Utils.addDays(today, -i)] = { reviews: 5, correct: 5, teaching: 0, newWords: 0 };
+  }
+
+  E.Achievements.evaluate(E.Analytics.buildAchievementContext());
+  assert.ok(E.Storage.state.achievements.consistent_learner && E.Storage.state.achievements.consistent_learner.unlockedAt,
+    'a 7-day streak should stamp consistent_learner as unlocked');
+
+  let html = E.Analytics.renderAchievementsSection();
+  let card = html.split('Consistent Learner')[0].split('achv-card ').pop();
+  assert.ok(card.startsWith('unlocked"'), 'card should render unlocked right after earning it');
+
+  // Break the streak: today and yesterday now have no activity, so the live check fails.
+  delete E.Storage.state.dailyActivity[today];
+  delete E.Storage.state.dailyActivity[E.Utils.addDays(today, -1)];
+  assert.equal(E.Analytics.buildAchievementContext().streak, 0, 'the streak should genuinely be broken now');
+
+  html = E.Analytics.renderAchievementsSection();
+  card = html.split('Consistent Learner')[0].split('achv-card ').pop();
+  assert.ok(card.startsWith('unlocked"'), 'card must stay unlocked once earned, even though the live streak check now fails');
+  const afterName = html.split('Consistent Learner')[1];
+  const cardBody = afterName.slice(0, afterName.indexOf('achv-card'));
+  assert.ok(!cardBody.includes('🔒 Locked'),
+    'an earned achievement must not show the Locked badge after the metric regresses');
+});
