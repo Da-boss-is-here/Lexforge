@@ -61,6 +61,16 @@ importJSON, load/save)
       a non-opts 4th arg. Fix only when `logError` is next touched for
       another reason.
 
+- [ ] **P3** — `word.teaching.stepResults` is a dead field: defined by the
+      schema (`WordModel.create`, `repairWord`) but never read or written
+      anywhere, including by `Teaching`.
+      Found: 2026-09-12 (during the Teaching scan). Location:
+      `WordModel.create`, `repairWord` (`w.teaching.stepResults` handling).
+      Notes: Noticed while scanning `Teaching` for T1–T6, but the fix (if
+      any -- populate it, or drop it from the schema) belongs to
+      Persistence/WordModel, not Teaching. No current reader depends on it,
+      so leaving it as dead weight is also a valid option.
+
 ## Practice
 _(scanned 2026-09-12, no findings)_
 
@@ -80,7 +90,7 @@ _(scanned 2026-09-12, no findings)_
       `===` comparison that tolerates `undefined`.
 
 ## Teaching
-_(not yet scanned)_
+_(scanned 2026-09-12, T1–T6 fixed)_
 
 ## Session
 _(not yet scanned)_
