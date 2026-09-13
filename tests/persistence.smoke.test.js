@@ -53,7 +53,10 @@ function buildSandbox() {
     // Fake timers: Utils.toast schedules a removal via setTimeout, but tests don't care
     // whether/when that fires -- a no-op avoids both a real multi-second wait and an
     // uncaught exception from the callback running after the test (and its fake DOM) is gone.
-    setTimeout(){ return 0; }, clearTimeout(){}
+    setTimeout(){ return 0; }, clearTimeout(){},
+    // Also no-ops by default (Exam.ensureTimer's setInterval) -- individual tests that need to
+    // observe/drive the exam countdown override ctx.setInterval/clearInterval themselves.
+    setInterval(){ return 0; }, clearInterval(){}
   };
   sandbox.window = sandbox;
   const ctx = vm.createContext(sandbox);
@@ -61,7 +64,7 @@ function buildSandbox() {
   script.runInContext(ctx);
   // Pull the pieces the tests need into the sandbox's reachable scope (top-level
   // const/class bindings share the context's global lexical scope across runs).
-  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL };', { filename: 'export-hook.js' }).runInContext(ctx);
+  new vm.Script('this.__exports = { Storage, WordModel, defaultState, validateAndRepair, Practice, App, Analytics, Utils, computeCalibration, computeBrier, computeStabilityGrowth, computeRetentionByInterval, computeFirstPostTeachingRetention, DailyActivity, Milestones, Achievements, ErrorIntegration, computeWeekOverWeek, computeStreakFromActivity, computeHeatmapCells, computeHighestSingleDay, computeFastestMastery, relativeDate, DimModel, computeLapseRates, computeFailuresByDimension, computeDimensionCoverage, Views, DIM_PRACTICE_LEVEL, repairWord, Teaching, Session, computeArmComparison, Exam, CATEGORY_TO_DIM, ERROR_CATEGORIES };', { filename: 'export-hook.js' }).runInContext(ctx);
   return { ctx, exports: sandbox.__exports, localStorage: sandbox.localStorage };
 }
 
@@ -185,6 +188,71 @@ test('a migrated legacy word is immediately eligible for the FSRS recognition qu
   const repaired = E.validateAndRepair(legacySave);
   const items = DueQueue.buildDimensionItems(repaired.words, 'recognition', new Date());
   assert.equal(items.length, 1, 'a freshly-migrated word should be due for its recognition card immediately, even though its legacy srs.nextReview is far in the future');
+});
+
+test('repairWord coerces errorCounts values to numbers, so WordModel.logError adds instead of concatenating strings', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = E.repairWord({
+    id: 'w1', word: 'test', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], created: '2025-01-01', history: [],
+    errorCounts: { Spelling: '3', Meaning: 'not-a-number' }, lastClozeIndex: -1, wordType: 'general',
+    teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} }
+  });
+  assert.equal(w.errorCounts.Spelling, 3, 'a numeric-looking string should be coerced to a number');
+  assert.equal(w.errorCounts.Meaning, undefined, 'a non-numeric string should be dropped rather than kept as-is');
+
+  E.WordModel.logError(w, 'Spelling', 1);
+  assert.equal(w.errorCounts.Spelling, 4, 'logError should add to a coerced numeric count, not concatenate ("3"+1==="31")');
+});
+
+test('repairWord does not mark teaching completed from history entries that all get dropped for invalid dates', () => {
+  const { exports: E } = buildSandbox();
+  const w = E.repairWord({
+    id: 'w1', word: 'test', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], created: '2025-01-01',
+    // Every history entry has an invalid date, so the repaired history ends up empty --
+    // teaching.completed must follow the REPAIRED history, not the raw one.
+    history: [{ date: 'not-a-date', level: 1, correct: true }],
+    errorCounts: {}, lastClozeIndex: -1, wordType: 'general', teaching: undefined
+  });
+  assert.equal(w.history.length, 0, 'invalid-date history entries should be dropped');
+  assert.equal(w.teaching.completed, false, 'teaching should not be marked completed when the repaired history is empty');
+});
+
+test('Storage.importJSON merge mode sorts capped logs by ts before slicing, so an older imported backup cannot evict newer local entries', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Storage.state.words.push(E.WordModel.create({
+    word: 'local-anchor', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], wordType: 'general'
+  }));
+  // Local already has 5000 newer entries -- exactly at MERGE_LOG_CAP -- at ts 2000..6999.
+  const LOCAL_COUNT = 5000;
+  E.Storage.state.sessionLog = Array.from({ length: LOCAL_COUNT }, (_, i) => ({ ts: 2000 + i, correct: true }));
+
+  // Incoming backup is entirely OLDER than local (ts 0..4999): a stale backup being merged in.
+  const incomingSessionLog = Array.from({ length: 5000 }, (_, i) => ({ ts: i, correct: true }));
+  const incoming = JSON.stringify({
+    version: 2,
+    words: [{
+      id: 'w-imported', word: 'imported-anchor', meaning: 'm', form: '', grammar: '', collocations: [],
+      contrast: '', contexts: [], production: '', cloze: [], created: '2025-01-01',
+      history: [], errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+      teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} }
+    }],
+    sessionLog: incomingSessionLog,
+    errorLog: [], settings: {}, writingLog: [], examLog: [], practiceSession: null
+  });
+
+  const ok = E.Storage.importJSON(incoming, 'merge');
+  assert.ok(ok, 'merge import should succeed');
+  const tsValues = E.Storage.state.sessionLog.map(s => s.ts);
+  // Without the fix, concat-then-slice(-CAP) keeps whatever lands at the END of the raw
+  // concatenation -- i.e. all of the older `incoming` entries -- and drops every newer local one.
+  assert.ok(tsValues.includes(6999), 'the newest local entry must survive the merge');
+  assert.ok(!tsValues.includes(0), 'the oldest imported entry should be evicted by the cap, not a newer local one');
+  assert.equal(E.Storage.state.sessionLog.length, LOCAL_COUNT, 'merged log should stay capped at MERGE_LOG_CAP');
 });
 
 test('Practice.buildDueQueue only surfaces a production item once recognition stability clears the unlock threshold', () => {
@@ -432,17 +500,7 @@ test('WordModel.mnemonicFaded returns false with no mnemonic regardless of FSRS 
   assert.equal(E.WordModel.mnemonicFaded(word), false);
 });
 
-test('WordModel.logError does not downgrade an Achieved dim\'s status when the fail is off-target for the question type actually tested', () => {
-  const { exports: E } = buildSandbox();
-  E.Storage.load();
-  const word = makeWordWithMnemonic(E);
-  word.dims.meaningRecall = { status: 'Achieved', success: 2, fail: 0 };
-  // A Cloze question (tests contextualComprehension) went wrong, tagged "Meaning" -- CATEGORY_TO_DIM
-  // maps Meaning -> meaningRecall, but meaningRecall was never what this question tested.
-  E.WordModel.logError(word, 'Meaning', 3, ['contextualComprehension']);
-  assert.equal(word.dims.meaningRecall.status, 'Achieved', 'status should not be knocked down by an off-target fail');
-  assert.equal(word.dims.meaningRecall.fail, 1, 'the fail count itself must still increment exactly as before');
-});
+// Removed: tested logError's testedDims parameter, removed in 037bbaa.
 
 test('WordModel.logError still downgrades an Achieved dim when the fail is on-target for the question type actually tested', () => {
   const { exports: E } = buildSandbox();
@@ -462,6 +520,70 @@ test('WordModel.logError preserves the original always-downgrade behavior when n
   word.dims.grammar = { status: 'Achieved', success: 2, fail: 0 };
   E.WordModel.logError(word, 'Grammar', 0); // 3-arg call, exactly as Teaching/ErrorIntegration still call it
   assert.equal(word.dims.grammar.status, 'Developing');
+});
+
+/* ---- X1: runDimensionPractice's queue items name their target dim, so the coverage table's
+   per-dimension Practice button credits the right dim instead of whatever recordDimForQuestion's
+   type-based inference happens to land on (DIM_PRACTICE_LEVEL groups multiple dims per level). ---- */
+
+function makeWordForDimPractice(E, word) {
+  const w = E.WordModel.create({
+    word, meaning: 'm', form: '', grammar: '', collocations: ['a', 'b'], contrast: 'c',
+    contexts: ['x', 'y'], production: 'p', cloze: [], wordType: 'general'
+  });
+  w.teaching.completed = true;
+  E.Storage.state.words.push(w);
+  return w;
+}
+
+['formRecognition', 'semanticDiscrimination', 'grammar', 'collocation', 'guidedProduction'].forEach(dimKey => {
+  test('runDimensionPractice(\'' + dimKey + '\'): grading correct credits ' + dimKey + ', not a sibling dim', () => {
+    const { exports: E } = buildSandbox();
+    E.Storage.load();
+    const word = makeWordForDimPractice(E, dimKey.toLowerCase() + '-word');
+    word.dims[dimKey].fail = 1; // matches runDimensionPractice's own eligibility filter
+
+    // Reproduces runDimensionPractice's queue item exactly: track:'legacy', level from
+    // DIM_PRACTICE_LEVEL, and (after the X1 fix) dimension: dimKey.
+    const level = E.DIM_PRACTICE_LEVEL[dimKey];
+    const item = { track: 'legacy', word, level, dimension: dimKey };
+    const q = E.Practice.generateQuestion(item);
+    E.Views.recordDimForQuestion(q, true);
+
+    assert.equal(word.dims[dimKey].success, 1, dimKey + ' itself must be credited');
+
+    // No sibling dim (whatever the old type-based inference would have hit instead) should move.
+    const DIM_KEYS = ['formRecognition','formRecall','meaningRecognition','meaningRecall',
+      'semanticDiscrimination','grammar','collocation','contextualComprehension',
+      'guidedProduction','independentProduction','novelApplication'];
+    DIM_KEYS.filter(k => k !== dimKey).forEach(other => {
+      assert.equal(word.dims[other].success, 0, other + ' must not be touched by practicing ' + dimKey);
+    });
+  });
+});
+
+test('generateQuestion + recordDimForQuestion: the normal ladder (no item.dimension) still credits meaningRecognition for a level-1 recognition question', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeWordForDimPractice(E, 'ladder-word');
+  // A plain buildDueQueue-shaped legacy item -- no dimension field, exactly as today.
+  const item = { track: 'legacy', word, level: 1 };
+  const q = E.Practice.generateQuestion(item);
+  assert.equal(q.dimension, undefined, 'a normal ladder item must not gain a dimension field');
+  E.Views.recordDimForQuestion(q, true);
+  assert.equal(word.dims.meaningRecognition.success, 1);
+  assert.equal(word.dims.formRecognition.success, 0);
+});
+
+test('generateQuestion + recordDimForQuestion: an FSRS-track meaningRecall review still credits both meaningRecall and formRecall (X1 fix must not touch this)', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = makeWordForDimPractice(E, 'fsrs-word');
+  const item = { track: 'fsrs', dimension: 'meaningRecall', word };
+  const q = E.Practice.generateQuestion(item);
+  E.Views.recordDimForQuestion(q, true);
+  assert.equal(word.dims.meaningRecall.success, 1, 'FSRS meaningRecall must still credit the legacy meaningRecall dim');
+  assert.equal(word.dims.formRecall.success, 1, 'FSRS meaningRecall must still credit the paired formRecall dim, not just meaningRecall alone');
 });
 
 /* ---- Analytics Phase A: broadened streak definition + teaching/retrieval accuracy split ---- */
@@ -1156,8 +1278,74 @@ test('WordModel.resetDim preserves everAchievedAt across a reset (so ErrorIntegr
 
   E.WordModel.resetDim(w, 'independentProduction');
   assert.equal(w.dims.independentProduction.status, 'Not assessed');
-  assert.equal(w.dims.independentProduction.success, 0);
+  // 782e5da: success is preserved as a lifetime tally and snapshotted into successAtReset,
+  // so every "successes since the last reset" reader compares (success - successAtReset).
+  assert.equal(w.dims.independentProduction.success, 2);
+  assert.equal(w.dims.independentProduction.successAtReset, 2);
   assert.equal(w.dims.independentProduction.everAchievedAt, originalAt, 'everAchievedAt is historical, not a mirror of current status');
+
+  // And the reset genuinely costs the dim its progress: it takes two fresh successes to
+  // re-achieve, not one off the back of the preserved lifetime count.
+  E.DimModel.record(w, 'independentProduction', true);
+  assert.equal(w.dims.independentProduction.status, 'Developing', 'one post-reset success is not enough');
+  E.DimModel.record(w, 'independentProduction', true);
+  assert.equal(w.dims.independentProduction.status, 'Achieved', 'two post-reset successes re-achieve the dim');
+});
+
+test('updateLadder ignores teaching-phase entries when checking for a level promotion', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'zulu');
+  w.levelState.level = 3;
+  // Two correct entries AT level 3 but tagged teaching -- these must not count toward the
+  // "two recent correct at this level" promotion rule, matching the last5 filter two lines
+  // above it and computeMastery's convention.
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 3, correct: true, phase: 'teaching' });
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 3, correct: true, phase: 'teaching' });
+
+  E.WordModel.updateLadder(w, 3, true);
+  assert.equal(w.levelState.level, 3, 'teaching entries must not promote the ladder');
+
+  // Two real retrieval entries at level 3 do promote it.
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 3, correct: true });
+  w.history.push({ ts: Date.now(), date: E.Utils.todayISO(), level: 3, correct: true });
+  E.WordModel.updateLadder(w, 3, true);
+  assert.equal(w.levelState.level, 4, 'two real correct attempts at the current level still promote');
+});
+
+test('logAttempt gates firstRetrieval on the resolved phase, so an attemptsPhase-only teaching attempt is not stamped as the first retrieval', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const w = makeWord(E, 'yankee');
+  E.Storage.state.words.push(w);
+  // attemptsPhase without a matching entry.phase -- the exact drift case logAttempt's own
+  // comment calls out for the DailyActivity bump. firstRetrieval must honor it too.
+  E.WordModel.logAttempt(w, 0, true, { attemptsPhase: 'teaching' });
+  assert.equal(w.firstRetrieval, null, 'a teaching attempt must not become the first retrieval');
+
+  // A genuine retrieval still stamps it.
+  E.WordModel.logAttempt(w, 2, true, { attemptsPhase: 'practice' });
+  assert.ok(w.firstRetrieval, 'a non-teaching attempt still sets firstRetrieval');
+});
+
+test('repairDims clamps successAtReset to success, so a corrupted save cannot strand a dim below the Achieved threshold', () => {
+  const { exports: E } = buildSandbox();
+  // successAtReset > success is not producible by resetDim (it snapshots the current success),
+  // so this only arises from a hand-edited or corrupted save -- but unclamped it makes
+  // (success - successAtReset) negative and the dim needs 6 successes to re-achieve, not 2.
+  const w = E.repairWord({
+    id: 'w1', word: 'clamp', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], created: '2025-01-01', history: [], errorCounts: {},
+    lastClozeIndex: -1, wordType: 'general',
+    teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+    dims: { grammar: { status: 'Developing', success: 1, fail: 0, successAtReset: 5 } }
+  });
+  assert.equal(w.dims.grammar.success, 1);
+  assert.equal(w.dims.grammar.successAtReset, 1, 'successAtReset must be clamped down to the success count');
+
+  E.DimModel.record(w, 'grammar', true);
+  assert.equal(w.dims.grammar.status, 'Developing', 'one success since the repaired reset point');
+  E.DimModel.record(w, 'grammar', true);
+  assert.equal(w.dims.grammar.status, 'Achieved', 'two successes must reach Achieved, not six');
 });
 
 test('repairDims accepts a save missing everAchievedAt entirely (pre-Phase-E) without throwing, and defaults it to null even for an Achieved dim', () => {
@@ -1249,4 +1437,556 @@ test('Views.runDimensionPractice: does not start a session when no word has fail
   E.Storage.state.words.push(makeWord(E, 'india')); // no fails anywhere
   E.Views.runDimensionPractice('novelApplication');
   assert.equal(E.Practice.session, null, 'no words failed novelApplication, so no session should start');
+});
+
+test('validateAndRepair rejects malformed settings.examDate and dailyActivity keys before they reach Utils.diffDays', () => {
+  const { exports: E } = buildSandbox();
+  const today = E.Utils.todayISO();
+
+  const repaired = E.validateAndRepair({
+    version: 2, words: [], errorLog: [],
+    settings: { examDate: 'not-a-date', theme: 'system' },
+    dailyActivity: {
+      'not-a-date': { reviews: 3, correct: 2, teaching: 0, newWords: 1 },
+      [today]: { reviews: 1, correct: 1, teaching: 0, newWords: 0 }
+    },
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+
+  assert.equal(repaired.settings.examDate, null, 'a malformed examDate should repair to null, not pass through');
+  assert.deepEqual(Object.keys(repaired.dailyActivity), [today], 'the malformed dailyActivity key should be dropped');
+
+  // The unvalidated values used to reach Utils.diffDays as NaN (and examDate reached
+  // compressForExam's new Date(...).toISOString(), which throws). After repair, neither
+  // consumer sees a bad date.
+  const streak = E.computeStreakFromActivity(repaired.dailyActivity, today);
+  assert.ok(Number.isFinite(streak.current) && Number.isFinite(streak.longest),
+    'streak math should stay finite -- a bad dailyActivity key would make diffDays return NaN');
+  assert.ok(Number.isFinite(E.Utils.diffDays(today, repaired.settings.examDate || today)),
+    'the repaired examDate should be safe to hand to diffDays');
+});
+
+test('Teaching.wireStep5 records a fail against formRecall/meaningRecall (not just history/attempts) on a failed supported-retrieval attempt', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'lucid', meaning: 'clear and easy to understand', form: 'adjective', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [],
+    wordType: 'general' // not difficultSpelling, so wireStep5 takes the hint-ladder retrieval path
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 5, retry: 0, inputs: {}, stepLogged: new Set(), step5Data: { cue: 'x', hintLevel: 0 } };
+
+  const nodes = {};
+  const makeNode = () => ({ value: '', disabled: false, innerHTML: '', addEventListener() {}, focus() {} });
+  ctx.document.getElementById = id => {
+    if(!nodes[id]) nodes[id] = makeNode();
+    return nodes[id];
+  };
+  nodes.retrieveSubmit = makeNode();
+  let doCheck = null;
+  nodes.retrieveSubmit.addEventListener = (ev, fn) => { if(ev==='click') doCheck = fn; };
+
+  E.Teaching.wireStep5();
+  nodes.retrieveInput.value = 'not-the-word'; // deliberately wrong
+  doCheck();
+
+  const historyEntry = word.history[word.history.length-1];
+  assert.equal(historyEntry.phase, 'teaching');
+  assert.equal(historyEntry.correct, false, 'history/attempts logging should be unchanged');
+
+  assert.equal(word.dims.formRecall.fail, 1, 'a failed supported-retrieval attempt should count against formRecall');
+  assert.equal(word.dims.meaningRecall.fail, 1, 'a failed supported-retrieval attempt should count against meaningRecall');
+});
+
+// Shared fake-DOM node for the double-click regression tests below: addEventListener records
+// handlers per event, and click() -- unlike a plain handler call -- mirrors real browser
+// semantics by refusing to fire once .disabled is true, so these tests actually exercise the
+// "disable before logging" fix rather than just calling the captured handler twice by hand.
+function makeClickNode() {
+  return {
+    value: '', disabled: false, innerHTML: '', style: {}, dataset: {}, _handlers: {},
+    classList: { add(){}, remove(){}, toggle(){} },
+    addEventListener(ev, fn) { (this._handlers[ev] = this._handlers[ev] || []).push(fn); },
+    click() { if (this.disabled) return; (this._handlers.click || []).forEach(fn => fn()); },
+    focus() {}, querySelector() { return null; }, querySelectorAll() { return []; }
+  };
+}
+
+test('Teaching.wireStep4 cloze branch disables input/submit before logging, so a double-click does not double-count the attempt', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'gust', meaning: 'a sudden strong rush of wind', form: 'noun', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = {
+    word, step: 4, retry: 0, inputs: {}, stepLogged: new Set(),
+    step4Data: { type: 'cloze', cloze: { answer: 'gust', display: 'A cool _____ blew through.' } }
+  };
+
+  const nodes = {};
+  ctx.document.getElementById = id => { if (!nodes[id]) nodes[id] = makeClickNode(); return nodes[id]; };
+  nodes.clozeInput = makeClickNode();
+  nodes.clozeInput.value = 'gust';
+
+  E.Teaching.wireStep4();
+  nodes.clozeSubmit.click();
+  nodes.clozeSubmit.click(); // simulated double-click
+
+  assert.equal(word.dims.contextualComprehension.success, 1, 'a double-click on Check should only count the attempt once');
+});
+
+test('Teaching.wireStep5 difficultSpelling branch disables spellInput/spellSubmit before logging, so a double-click does not double-count the spelling check', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'lucid', meaning: 'clear and easy to understand', form: 'adjective', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: [],
+    wordType: 'difficultSpelling'
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 5, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const nodes = {};
+  ctx.document.getElementById = id => { if (!nodes[id]) nodes[id] = makeClickNode(); return nodes[id]; };
+  nodes.spellInput = makeClickNode();
+  nodes.spellInput.value = 'lusid'; // deliberately wrong
+
+  E.Teaching.wireStep5();
+  nodes.spellSubmit.click();
+  nodes.spellSubmit.click(); // simulated double-click
+
+  assert.equal(word.dims.formRecall.fail, 1, 'a double-click on Check Spelling should only count the attempt once');
+});
+
+test('Teaching.wireStep6 selfYes/selfNo disable each other before logging, so a double-click does not double-count the self-assessment', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'ponder', meaning: 'to think carefully about something', form: 'verb', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 6, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const nodes = {};
+  const feedbackNode = makeClickNode();
+  feedbackNode.querySelector = sel => {
+    if (sel === '#selfYes') return nodes.selfYes || (nodes.selfYes = makeClickNode());
+    if (sel === '#selfNo') return nodes.selfNo || (nodes.selfNo = makeClickNode());
+    return null;
+  };
+  ctx.document.getElementById = id => {
+    if (id === 'teachFeedback') return feedbackNode;
+    if (!nodes[id]) nodes[id] = makeClickNode();
+    return nodes[id];
+  };
+  nodes.constrainedInput = makeClickNode();
+  nodes.constrainedInput.value = 'I pondered the question for a while.';
+
+  E.Teaching.wireStep6();
+  nodes.constrainedSubmit.click(); // opens the self-check panel and wires selfYes/selfNo
+
+  nodes.selfYes.click();
+  nodes.selfYes.click(); // simulated double-click
+
+  assert.equal(word.dims.guidedProduction.success, 1, 'a double-click on selfYes should only count the outcome once');
+});
+
+test('Teaching.handleStepOutcome disables error-category buttons before logging, so a double-click on one category does not double-log it', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'ponder', meaning: 'to think carefully about something', form: 'verb', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+
+  E.Teaching.state = { word, step: 6, retry: 0, inputs: {}, stepLogged: new Set() };
+
+  const catButtons = E.ERROR_CATEGORIES.map(c => { const n = makeClickNode(); n.dataset = { c }; return n; });
+  const feedbackNode = makeClickNode();
+  feedbackNode.querySelectorAll = sel => sel === '.error-cats button' ? catButtons : [];
+  const nodes = { teachFeedback: feedbackNode };
+  ctx.document.getElementById = id => { if (!nodes[id]) nodes[id] = makeClickNode(); return nodes[id]; };
+
+  E.Teaching.handleStepOutcome(false, { correctAnswerText: 'x' });
+
+  const cat = E.ERROR_CATEGORIES[0];
+  const btn = catButtons[0];
+  btn.click();
+  btn.click(); // simulated double-click on the same category
+
+  const dimKey = E.CATEGORY_TO_DIM[cat];
+  assert.equal(word.dims[dimKey].fail, 1, 'a double-click on one error category should only log once');
+  assert.equal(word.teaching.errorHistory.length, 1, 'a double-click on one error category should only push one errorHistory entry');
+});
+
+test('Teaching.state.stepLogged blocks a step-4 answer replayed via Back -> Forward from double-logging, but an explicit retry still counts', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'gambit', meaning: 'a risky opening move', form: 'noun', grammar: '',
+    collocations: ['a', 'b'], contrast: '', contexts: ['x', 'y'], production: 'p', cloze: []
+  });
+  E.Storage.state.words.push(word);
+  // Force genStep4 to always draw 'mcq' (with word.production first, so it's the correct
+  // option) once step4Data is regenerated by an explicit retry below.
+  E.Utils.pick = arr => arr[0];
+  E.Utils.shuffle = arr => arr;
+
+  const options = [{ text: 'p', correct: true }, { text: 'wrong', correct: false }];
+  const correctIdx = 0, wrongIdx = 1;
+  E.Teaching.state = { word, step: 4, retry: 0, inputs: {}, stepLogged: new Set(), step4Data: { type: 'mcq', options } };
+
+  const makeMcqBtn = () => { const n = makeClickNode(); n.classList = { add(){}, remove(){}, toggle(){} }; return n; };
+  let currentMcqBtns = null;
+  ctx.document.querySelectorAll = sel => {
+    if (sel === '#mcqOptions button') { currentMcqBtns = options.map(makeMcqBtn); return currentMcqBtns; }
+    return [];
+  };
+
+  const genericNodes = {};
+  const feedbackNode = makeClickNode();
+  let currentCatBtns = null;
+  feedbackNode.querySelectorAll = sel => {
+    if (sel === '.error-cats button') { currentCatBtns = E.ERROR_CATEGORIES.map(c => { const n = makeClickNode(); n.dataset = { c }; return n; }); return currentCatBtns; }
+    return [];
+  };
+  const retryNode = makeClickNode(), advanceNode = makeClickNode();
+  feedbackNode.querySelector = sel => (sel === '#retryBtn' ? retryNode : sel === '#advanceBtn' ? advanceNode : null);
+  ctx.document.getElementById = id => {
+    if (id === 'teachFeedback') return feedbackNode;
+    if (!genericNodes[id]) genericNodes[id] = makeClickNode();
+    return genericNodes[id];
+  };
+
+  E.Teaching.wireStep4();
+  currentMcqBtns[correctIdx].click();
+  assert.equal(word.dims.meaningRecognition.success, 1, 'sanity: the first correct answer should log a success');
+
+  // Simulate Back -> Forward: real navigation re-renders and re-wires step 4 from scratch
+  // (still against the same cached step4Data/options), producing a fresh, un-disabled button
+  // set -- exactly the replay this guard exists to catch.
+  E.Teaching.goStep(5);
+  E.Teaching.goStep(4);
+  currentMcqBtns[correctIdx].click(); // replay the same already-logged answer
+
+  assert.equal(word.dims.meaningRecognition.success, 1, 'replaying an already-logged step via Back -> Forward must not double-count');
+
+  // Now fail on the replayed visit and explicitly retry -- a deliberate new attempt, which
+  // should count once it resolves. The previous click already disabled that button set, so
+  // re-wire (as a fresh render would) to get a live one to fail on.
+  E.Teaching.wireStep4();
+  currentMcqBtns[wrongIdx].click(); // wrong answer -> handleStepOutcome(false, ...)
+  currentCatBtns[0].click(); // first failure -> retry===1 -> "Try This Step Again" is offered
+  retryNode.click(); // resets step4Data and clears stepLogged for step 4, then re-renders
+
+  currentMcqBtns[correctIdx].click(); // answer again, for real, after the explicit retry
+
+  assert.equal(word.dims.meaningRecognition.success, 2, 'an explicit retry is a deliberate new attempt and should count');
+});
+
+test('Exam.restore both subtracts elapsed wall-clock time AND restarts the countdown timer, so time is not frozen until the user opens the Writing tab', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+
+  const realNow = Date.now();
+  const T = realNow - 60000; // saved 60 real seconds ago
+  E.Storage.state.examSession = {
+    status: 'running', prompt: 'Write about X', minutes: 10, text: 'draft so far',
+    remainingSec: 600, lastTickAt: T, targetWordIds: [], checklist: {}
+  };
+
+  // Capture the interval callback restore()'s ensureTimer() call installs, instead of a real
+  // setInterval, so "10 seconds later" can be simulated by invoking it 10 times rather than
+  // actually sleeping -- tick() itself decrements remainingSec by 1 per call regardless of
+  // real elapsed time.
+  let tickFn = null;
+  ctx.setInterval = (fn) => { tickFn = fn; return 1; };
+  ctx.clearInterval = () => { tickFn = null; };
+
+  E.Exam.restore();
+
+  assert.equal(E.Exam.remainingSec, 540, 'elapsed wall-clock time since lastTickAt should be subtracted immediately');
+  assert.ok(tickFn, 'restore() should have started the countdown timer via ensureTimer(), not left it frozen until Exam.render()');
+
+  for(let i=0;i<10;i++) tickFn();
+  assert.equal(E.Exam.remainingSec, 530, 'the timer should now be running, so 10 further ticks bring it down by 10 more');
+});
+
+test('Practice.restore remaps savedIdx through originalToNew, so returnToCurrent lands on the right card after a queued word was deleted', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const alpha = makeWord(E, 'alpha');
+  const charlie = makeWord(E, 'charlie');
+  // 'bravo' is deliberately NOT added to Storage.state.words -- it stands for a word deleted
+  // between persist() and restore(), so original queue index 1 gets dropped (0->0, 2->1).
+  E.Storage.state.words.push(alpha, charlie);
+
+  E.Storage.state.practiceSession = {
+    mode: 'legacy', idx: 0, reviewing: true,
+    savedIdx: 2, // ORIGINAL position of charlie -- sits past the item about to be dropped
+    queue: [
+      { wordId: alpha.id, level: 2, drillType: null, track: null, dimension: null },
+      { wordId: 'deleted-bravo', level: 2, drillType: null, track: null, dimension: null },
+      { wordId: charlie.id, level: 2, drillType: null, track: null, dimension: null }
+    ],
+    results: []
+  };
+
+  E.Practice.restore();
+  const s = E.Practice.session;
+  assert.equal(s.queue.length, 2, 'sanity: the deleted word should have been dropped from the queue');
+  assert.equal(s.savedIdx, 1, 'savedIdx should be remapped from original index 2 to new index 1');
+  assert.equal(s.reviewing, true, 'a savedIdx that still resolves should leave reviewing alone');
+
+  E.Practice.returnToCurrent();
+  assert.equal(s.idx, 1);
+  assert.equal(s.queue[s.idx].word.word, 'charlie', 'returnToCurrent should land on charlie, not past the end');
+});
+
+test('Practice.restore falls back to queue.length + reviewing:false when no original index at or after savedIdx survives', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const alpha = makeWord(E, 'alpha');
+  E.Storage.state.words.push(alpha);
+
+  E.Storage.state.practiceSession = {
+    mode: 'legacy', idx: 0, reviewing: true,
+    savedIdx: 1, // original position of the word that is about to be dropped; nothing survives after it
+    queue: [
+      { wordId: alpha.id, level: 2, drillType: null, track: null, dimension: null },
+      { wordId: 'deleted-bravo', level: 2, drillType: null, track: null, dimension: null }
+    ],
+    results: []
+  };
+
+  E.Practice.restore();
+  const s = E.Practice.session;
+  assert.equal(s.savedIdx, s.queue.length, 'savedIdx should park at queue.length when nothing survives after it');
+  assert.equal(s.reviewing, false, 'reviewing must be cleared alongside the sentinel, mirroring _pruneDeletedWord');
+
+  const idxBefore = s.idx;
+  E.Practice.returnToCurrent();
+  assert.equal(s.idx, idxBefore, 'with reviewing false, returnToCurrent early-returns and never consumes the sentinel');
+});
+
+test('Teaching.genStep4 flushes word.lastClozeIndex when the cloze branch is drawn, so a refresh does not lose it', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'zephyr', meaning: 'a gentle breeze', form: 'noun', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: 'A zephyr drifted through the valley.',
+    wordType: 'general', cloze: ['A cool ___ drifted by.', 'The ___ rustled the leaves.']
+  });
+  E.Storage.state.words.push(word);
+  E.Storage.save();
+
+  E.Teaching.state = { word, step: 4, inputs: {} };
+  // Force the cloze branch: types is ['mcq','explain','cloze'] (cloze pushed last since this
+  // word has usable cloze candidates) -- always picking the last element forces 'cloze'.
+  const origPick = E.Utils.pick;
+  E.Utils.pick = arr => arr[arr.length-1];
+  try{
+    const data = E.Teaching.genStep4();
+    assert.equal(data.type, 'cloze', 'sanity: the forced pick should have drawn the cloze branch');
+  } finally {
+    E.Utils.pick = origPick;
+  }
+  const drawnIdx = word.lastClozeIndex;
+
+  E.Storage.load(); // simulate a refresh: reload from localStorage
+  const reloaded = E.Storage.state.words.find(w => w.id === word.id);
+  assert.equal(reloaded.lastClozeIndex, drawnIdx,
+    'the drawn cloze index should have been flushed to storage before any refresh');
+});
+
+test('Practice.genCloze flushes word.lastClozeIndex so a refresh does not lose the cloze rotation', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'gambit', meaning: 'a risky opening move', form: 'noun', grammar: '', collocations: ['a', 'b'],
+    contrast: '', contexts: ['x', 'y'], production: '', wordType: 'general',
+    cloze: ['The opening ___ surprised everyone.', 'Her ___ paid off in the end.']
+  });
+  E.Storage.state.words.push(word);
+  E.Storage.save();
+
+  E.Practice.genCloze(word);
+  const idxAfterCall = word.lastClozeIndex;
+  assert.ok(idxAfterCall === 0 || idxAfterCall === 1, 'sanity: getClozeSentence should have picked one of the two candidates');
+
+  // Simulate a refresh: reload straight from localStorage rather than reusing the in-memory word.
+  E.Storage.load();
+  const reloaded = E.Storage.state.words.find(w => w.id === word.id);
+  assert.equal(reloaded.lastClozeIndex, idxAfterCall,
+    'lastClozeIndex should have been flushed to storage before any refresh, not left in memory only');
+});
+
+test('Views.handleParseFill counts pasted words toward Session.log.newAdded even when the Phase 2 patch is not live', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  E.Session.active = true;
+  E.Session.log = { reviewed: 0, correct: 0, newAdded: 0, errors: 0 };
+  // The Phase 2 Add-flow patch is NOT live -- what you get by opening the Add tab from the
+  // tab bar mid-session rather than via Phase 2's "Add a Word" button.
+  E.Session._origHandleSaveWord = null;
+
+  const line = w => [w, 'meaning of ' + w, 'noun', 'countable', 'c1 ' + w + '; c2 ' + w,
+    'opposite', 'ctx one; ctx two', w + ' in a sentence.', '', ''].join('|');
+  const pasted = ['alpha', 'bravo', 'charlie'].map(line).join('\n');
+
+  // handleParseFill reads its fields off the passed element and, on full success, calls
+  // renderBeginTeaching -> document.getElementById(...).querySelector(...).addEventListener.
+  // The shared fake returns null from querySelector, so stub a DOM that wires up.
+  const stubNode = () => ({ innerHTML: '', textContent: '', after() {}, addEventListener() {} });
+  const el = { querySelector: sel => (sel === '#pasteArea' ? { value: pasted } : stubNode()) };
+  ctx.document.getElementById = () => ({
+    innerHTML: '', querySelector: () => ({ addEventListener() {} })
+  });
+
+  const before = E.Session.log.newAdded;
+  E.Views.handleParseFill(el);
+
+  assert.equal(E.Storage.state.words.length, 3, 'sanity: all three pasted words should be added');
+  assert.equal(E.Session.log.newAdded - before, 3,
+    'all three pasted words should count toward the session, regardless of which path inserted them');
+});
+
+test('Session.renderPhase Phase 4 excludes a word whose teaching is not completed', () => {
+  const { ctx, exports: E } = buildSandbox();
+  E.Storage.load();
+  const today = E.Utils.todayISO();
+
+  const untaught = makeWord(E, 'alpha');
+  untaught.teaching.completed = false;
+  const taught = makeWord(E, 'beta');
+  taught.teaching.completed = true;
+  E.Storage.state.words.push(untaught, taught);
+
+  // Phase 4's "pending error review" is derived, not a stored flag: an errorLog entry dated
+  // today that no later correct attempt today has resolved.
+  E.Storage.state.errorLog.push(
+    { wordId: untaught.id, category: 'Meaning', date: today },
+    { wordId: taught.id, category: 'Meaning', date: today }
+  );
+
+  // renderPhase wires buttons via el.querySelector(...).addEventListener; the shared fake
+  // element returns null from querySelector, so give this test a DOM stub that records the
+  // handlers instead, and capture the queue handed to _beginQueue.
+  const handlers = {};
+  ctx.document.getElementById = () => ({
+    innerHTML: '',
+    querySelector: sel => ({ addEventListener: (ev, fn) => { handlers[sel] = fn; } })
+  });
+  let captured = null;
+  E.Session._beginQueue = q => { captured = q; };
+
+  E.Session.phase = 3; // 0-indexed: phase 3 is the "Phase 4 · Error Review" screen
+  E.Session.renderPhase();
+  handlers['#beginBtn']();
+
+  assert.ok(captured, 'Phase 4 should offer a Begin button with a queue');
+  const queueWords = captured.map(item => item.word.word);
+  assert.equal(queueWords.length, 1, 'the untaught word should not enter Phase 4 retrieval practice');
+  assert.equal(queueWords[0], 'beta', 'only the word whose teaching is complete should be queued');
+});
+
+test('repairWord rejects a whitespace-only word, and Teaching.wireStep5 tolerates a null word', () => {
+  const { exports: E } = buildSandbox();
+  assert.equal(E.repairWord({ word: '   ' }), null, 'a whitespace-only word should not survive repair');
+
+  E.Teaching.state = { word: null };
+  assert.doesNotThrow(() => E.Teaching.wireStep5());
+});
+
+function rawWordWithHistory(historyDate){
+  return {
+    id: 'w1', word: 'echo', meaning: 'm', form: '', grammar: '', collocations: [], contrast: '',
+    contexts: [], production: '', cloze: [], created: '2026-01-01',
+    srs: { interval: 1, nextReview: '2026-01-01', easeStreak: 0, lastPracticed: null },
+    levelState: { level: 2 }, errorCounts: {}, lastClozeIndex: -1, wordType: 'general',
+    teaching: { completed: true, currentStep: 8, errorHistory: [], stepResults: {} },
+    history: [{ ts: 1, date: historyDate, level: 2, correct: false }]
+  };
+}
+
+test('validateAndRepair drops an errorLog entry with a malformed date, instead of letting it reach Utils.diffDays', () => {
+  const { exports: E } = buildSandbox();
+  const repaired = E.validateAndRepair({
+    version: 2, words: [], errorLog: [{ ts: 1, wordId: 'w1', word: 'x', category: 'Meaning', level: 0, date: 'not-a-date' }],
+    settings: {}, sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.errorLog.length, 0, 'the malformed-date errorLog entry should be dropped');
+  assert.doesNotThrow(() => E.Utils.diffDays('not-a-date', E.Utils.todayISO()));
+});
+
+test('validateAndRepair drops a word.history entry with a malformed date, instead of letting it reach the dailyActivity backfill', () => {
+  const { exports: E } = buildSandbox();
+  const repaired = E.validateAndRepair({
+    version: 2, words: [rawWordWithHistory('not-a-date')], errorLog: [], settings: {},
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.words[0].history.length, 0, 'the malformed-date history entry should be dropped');
+
+  E.Storage.state = repaired;
+  assert.doesNotThrow(() => E.Storage.backfillDailyActivity());
+  // word.created ('2026-01-01') is well-formed and legitimately backfills a newWords bucket;
+  // what must NOT happen is a 'not-a-date' bucket keyed off the malformed history entry.
+  assert.deepEqual(Object.keys(E.Storage.state.dailyActivity), ['2026-01-01']);
+  assert.equal(E.Storage.state.dailyActivity['2026-01-01'].reviews, 0,
+    'the dropped history entry must not have contributed a reviews bump anywhere');
+  assert.doesNotThrow(() => E.computeStreakFromActivity(E.Storage.state.dailyActivity, E.Utils.todayISO()));
+});
+
+test('a valid word.history date survives repair and reaches diffDays finite via the backfill/streak path', () => {
+  const { exports: E } = buildSandbox();
+  const repaired = E.validateAndRepair({
+    version: 2, words: [rawWordWithHistory('2026-01-05')], errorLog: [], settings: {},
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.words[0].history.length, 1, 'a well-formed history entry should survive repair');
+
+  E.Storage.state = repaired;
+  E.Storage.backfillDailyActivity();
+  const streak = E.computeStreakFromActivity(E.Storage.state.dailyActivity, E.Utils.todayISO());
+  assert.ok(Number.isFinite(streak.current) && Number.isFinite(streak.longest));
+});
+
+test('word.srs.lastPracticed, word.firstRetrieval, attempts[].date, and *Log[].date are inert -- a malformed value passes through repair without crashing anything, because none of them are ever read in a date-arithmetic context', () => {
+  const { exports: E } = buildSandbox();
+  const rawWord = rawWordWithHistory('2026-01-05');
+  rawWord.srs.lastPracticed = 'not-a-date';
+  rawWord.firstRetrieval = { date: 'not-a-date', correct: true, ts: 1 };
+
+  let repaired;
+  assert.doesNotThrow(() => {
+    repaired = E.validateAndRepair({
+      version: 2, words: [rawWord],
+      errorLog: [], settings: {},
+      sessionLog: [{ ts: 1, date: 'not-a-date', summary: {} }],
+      writingLog: [{ ts: 1, date: 'not-a-date' }],
+      examLog: [{ ts: 1, date: 'not-a-date' }],
+      practiceSession: null
+    });
+  });
+  // Not sanitized -- these fields are never read in arithmetic anywhere in the app, so
+  // validating them would have no observable effect (see bug #7's investigation notes).
+  assert.equal(repaired.words[0].srs.lastPracticed, 'not-a-date');
+  assert.equal(repaired.words[0].firstRetrieval.date, 'not-a-date');
+  assert.equal(repaired.sessionLog.length, 1);
+  assert.equal(repaired.writingLog.length, 1);
+  assert.equal(repaired.examLog.length, 1);
+
+  E.Storage.state = repaired;
+  E.Storage.state.attempts = [{ ts: 1, date: 'not-a-date', wordId: 'w1', correct: true, phase: null, track: 'legacy', dimension: null, rating: null }];
+  assert.doesNotThrow(() => E.computeArmComparison(E.Storage.state.words, E.Storage.state.attempts));
+  assert.doesNotThrow(() => E.computeFirstPostTeachingRetention(E.Storage.state.words));
 });

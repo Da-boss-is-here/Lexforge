@@ -542,7 +542,7 @@ const CATEGORY_TO_DIM = {
 };
 
 const DIMENSIONS = [
-  {key:'formRecognition', label:'Form Recognition'},
+  {key:'formRecognition', label:'Form / Word-Family Errors'},
   {key:'formRecall', label:'Form Recall (Spelling)'},
   {key:'meaningRecognition', label:'Meaning Recognition'},
   {key:'meaningRecall', label:'Meaning Recall'},
@@ -596,7 +596,12 @@ function repairDims(raw){
         // as freshDims, so it re-achieves on its next success exactly like it would have
         // before this fix. That reset's history is genuinely unrecoverable (there was no
         // field to record it in), so this is accepted rather than special-cased.
-        d[k].successAtReset = Number(raw[k].successAtReset)||0;
+        // Clamped to [0, success]: the two fields are repaired independently, so a save
+        // carrying successAtReset > success would make (success - successAtReset) negative
+        // and strand the dim below DimModel.record's Achieved threshold for several extra
+        // successes. successAtReset is by construction a past snapshot of success, so it
+        // can never legitimately exceed it.
+        d[k].successAtReset = Utils.clamp(Number(raw[k].successAtReset)||0, 0, d[k].success);
       }
     });
   }
@@ -675,6 +680,12 @@ const MERGE_LOG_CAP = 5000;
 // than reusing FSRS_REVIEW_LOG_CAP.
 const ATTEMPTS_LOG_CAP = 15000;
 
+// YYYY-MM-DD or bust. Single source of truth for every date-shaped field the repair paths
+// below accept -- a malformed one reaches Utils.diffDays' unguarded a.split('-') (silent NaN
+// arithmetic) and, for settings.examDate, FSRSScheduler.compressForExam's
+// new Date(...).toISOString(), which throws RangeError outright.
+function isValidDateStr(s){ return typeof s==='string' && /^\d{4}-\d{2}-\d{2}$/.test(s); }
+
 function defaultState(){
   return {
     version: 2,
@@ -697,6 +708,11 @@ function defaultState(){
     // phase, track, dimension, rating, hinted, errorCategory}
     attempts: [],
     practiceSession: null, // in-progress practice queue, so a page refresh mid-session can resume (see Practice.persist/restore)
+    // Daily Session's own durable state -- separate from practiceSession because the queue is
+    // nulled at every phase boundary (#doneBtn -> Practice.clearPersisted) while the session
+    // itself keeps running through the next phase's interstitial. See
+    // Session.persist/restore/clearPersisted.
+    sessionState: null, // {active, phase, log:{reviewed,correct,newAdded,errors}}
     // In-progress Timed Exam, so a page refresh doesn't lose the prompt/writing/timer state --
     // see Exam.persist/restore. Deliberately excludes 'done' (see Exam.persist's guard):
     // that status's render depends on Exam.lastRecord, which isn't persisted, so a 'done' exam
@@ -719,11 +735,14 @@ function validateAndRepair(raw){
   if(!raw || typeof raw !== 'object') return base;
   const out = base;
   if(Array.isArray(raw.words)){
-    out.words = raw.words.filter(w=>w && typeof w==='object' && w.word).map(repairWord);
+    out.words = raw.words.filter(w=>w && typeof w==='object' && w.word).map(repairWord).filter(Boolean);
   }
-  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category) && typeof e.date==='string');
+  if(Array.isArray(raw.errorLog)) out.errorLog = raw.errorLog.filter(e=>e && e.category && ERROR_CATEGORIES.includes(e.category) && isValidDateStr(e.date));
   if(raw.settings && typeof raw.settings==='object'){
-    out.settings.examDate = typeof raw.settings.examDate==='string' ? raw.settings.examDate : null;
+    // Repairs to null (the documented "no exam set" default), not to today: every consumer
+    // already guards on `if(examDate)`, whereas inventing a date would silently compress every
+    // card's schedule via FSRSScheduler.compressForExam.
+    out.settings.examDate = isValidDateStr(raw.settings.examDate) ? raw.settings.examDate : null;
     out.settings.theme = ['system','light','dark'].includes(raw.settings.theme) ? raw.settings.theme : 'system';
     out.settings.fsrs = FSRSScheduler.repairSettings(raw.settings.fsrs);
   }
@@ -734,6 +753,24 @@ function validateAndRepair(raw){
   if(Array.isArray(raw.attempts)) out.attempts = raw.attempts.filter(s=>s && s.ts).slice(-ATTEMPTS_LOG_CAP);
   if(raw.practiceSession && typeof raw.practiceSession==='object' && Array.isArray(raw.practiceSession.queue)){
     out.practiceSession = raw.practiceSession;
+  }
+  // Shape-gated the same way -- accepted wholesale or not at all. log is normalised field-by-
+  // field (numeric fallbacks) rather than accepted wholesale, since a corrupted single field
+  // there (e.g. non-numeric reviewed) would otherwise poison Session.log's arithmetic.
+  if(raw.sessionState && typeof raw.sessionState==='object' &&
+     typeof raw.sessionState.active==='boolean' &&
+     typeof raw.sessionState.phase==='number' &&
+     raw.sessionState.log && typeof raw.sessionState.log==='object'){
+    out.sessionState = {
+      active: raw.sessionState.active,
+      phase: raw.sessionState.phase,
+      log: {
+        reviewed: Number(raw.sessionState.log.reviewed)||0,
+        correct: Number(raw.sessionState.log.correct)||0,
+        newAdded: Number(raw.sessionState.log.newAdded)||0,
+        errors: Number(raw.sessionState.log.errors)||0
+      }
+    };
   }
   // Shape-gated, same as practiceSession above -- accepted wholesale or not at all, no
   // per-field repair. 'done' is deliberately not in the status whitelist (see examSession's
@@ -761,6 +798,10 @@ function validateAndRepair(raw){
     Object.keys(raw.dailyActivity).forEach(date=>{
       const v = raw.dailyActivity[date];
       if(!v || typeof v!=='object') return;
+      // The key IS the date here, so a malformed one can't be repaired in place -- remapping it
+      // to today would fabricate activity on a real day (and collide with today's real bucket),
+      // so drop the entry. It reaches Utils.diffDays via computeStreakFromActivity.
+      if(!isValidDateStr(date)) return;
       out.dailyActivity[date] = {
         reviews: Number(v.reviews)||0, correct: Number(v.correct)||0,
         teaching: Number(v.teaching)||0, newWords: Number(v.newWords)||0
@@ -781,35 +822,58 @@ function validateAndRepair(raw){
 }
 
 function repairWord(w){
+  const trimmedWord = String(w.word||'').trim();
+  if(!trimmedWord) return null;
+  // Computed before `d` so the teaching fallback below can check the repaired/filtered
+  // history's length instead of the raw (possibly all-invalid) w.history -- see
+  // KNOWN_ISSUES.md F2.
+  const repairedHistory = Array.isArray(w.history) ? w.history.filter(h=>h && typeof h==='object' && isValidDateStr(h.date)) : [];
   const d = {
     id: w.id || Utils.uid(),
-    word: String(w.word||'').trim(),
+    word: trimmedWord,
     meaning: String(w.meaning||'').trim(),
     form: String(w.form||'').trim(),
     grammar: String(w.grammar||'').trim(),
-    collocations: Array.isArray(w.collocations) ? w.collocations.filter(Boolean) : [],
+    // Non-string elements (numbers, objects, booleans surviving a hand-edited save) must be
+    // filtered out BEFORE .trim() -- .filter(Boolean) alone lets them through and .trim()
+    // only exists on strings.
+    collocations: Array.isArray(w.collocations) ? w.collocations.filter(x=>typeof x==='string').map(x=>x.trim()).filter(Boolean) : [],
     contrast: String(w.contrast||'').trim(),
-    contexts: Array.isArray(w.contexts) ? w.contexts.filter(Boolean) : [],
+    contexts: Array.isArray(w.contexts) ? w.contexts.filter(x=>typeof x==='string').map(x=>x.trim()).filter(Boolean) : [],
     production: String(w.production||'').trim(),
     mnemonic: String(w.mnemonic||'').trim(),
     pronunciation: String(w.pronunciation||'').trim(),
-    cloze: Array.isArray(w.cloze) ? w.cloze.filter(Boolean) : [],
-    created: w.created || Utils.todayISO(),
+    cloze: Array.isArray(w.cloze) ? w.cloze.filter(x=>typeof x==='string').map(x=>x.trim()).filter(Boolean) : [],
+    created: isValidDateStr(w.created) ? w.created : Utils.todayISO(),
     srs: w.srs && typeof w.srs==='object' ? {
       interval: Number(w.srs.interval)||1,
-      nextReview: w.srs.nextReview || Utils.todayISO(),
+      nextReview: isValidDateStr(w.srs.nextReview) ? w.srs.nextReview : Utils.todayISO(),
       easeStreak: Number(w.srs.easeStreak)||0,
       lastPracticed: w.srs.lastPracticed || null
     } : { interval:1, nextReview: Utils.todayISO(), easeStreak:0, lastPracticed:null },
     levelState: w.levelState && typeof w.levelState==='object' ? { level: Utils.clamp(Number(w.levelState.level)||2,1,4) } : { level:2 },
-    history: Array.isArray(w.history) ? w.history.filter(h=>h && typeof h==='object') : [],
-    errorCounts: w.errorCounts && typeof w.errorCounts==='object' ? w.errorCounts : {},
+    // A malformed h.date can't be repaired to a placeholder (that would fabricate a review on
+    // the wrong day once picked up by Storage.backfillDailyActivity, the same fabrication risk
+    // dailyActivity's own key repair avoids) -- drop the entry, same as errorLog. Counts toward
+    // the 200-cap slice below same as any other entry, just one fewer surviving it.
+    history: repairedHistory,
+    // Values coerced to finite numbers -- WordModel.logError does `(errorCounts[cat]||0)+1`,
+    // and a string survivor here (e.g. a hand-edited save's {Spelling:"3"}) would concatenate
+    // instead of add ("3"+1 === "31"). See KNOWN_ISSUES.md F3.
+    errorCounts: (w.errorCounts && typeof w.errorCounts==='object') ? Object.keys(w.errorCounts).reduce((out,k)=>{
+      const n = Number(w.errorCounts[k]);
+      if(Number.isFinite(n)) out[k] = n;
+      return out;
+    }, {}) : {},
     lastClozeIndex: typeof w.lastClozeIndex==='number' ? w.lastClozeIndex : -1,
     wordType: WORD_TYPES.some(t=>t.key===w.wordType) ? w.wordType : 'general',
     // Phase C: when this word first reached Stable-or-better mastery, for Phase D. Never
     // backfilled retroactively (unknowable for existing saves) -- starts null, set going
     // forward the first time computeMastery crosses the threshold (see checkFirstMastery).
     firstMasteryAt: typeof w.firstMasteryAt==='number' ? w.firstMasteryAt : null,
+    // Gated the same way as firstMasteryAt above -- accepted only when shaped right, else null
+    // (an old pre-fix save simply never had this field, which is the expected migration path).
+    firstRetrieval: (w.firstRetrieval && typeof w.firstRetrieval==='object' && typeof w.firstRetrieval.date==='string') ? w.firstRetrieval : null,
     dims: repairDims(w.dims),
     fsrs: FSRSScheduler.repairWordFsrs(w.fsrs),
     teaching: (w.teaching && typeof w.teaching==='object') ? {
@@ -817,7 +881,7 @@ function repairWord(w){
       currentStep: Utils.clamp(Number(w.teaching.currentStep)||1, 1, 8),
       errorHistory: Array.isArray(w.teaching.errorHistory) ? w.teaching.errorHistory : [],
       stepResults: (w.teaching.stepResults && typeof w.teaching.stepResults==='object') ? w.teaching.stepResults : {}
-    } : { completed: (w.history && w.history.length>0) || false, currentStep: 8, errorHistory: [], stepResults: {} }
+    } : { completed: repairedHistory.length>0, currentStep: 8, errorHistory: [], stepResults: {} }
   };
   return d;
 }
@@ -887,8 +951,16 @@ const Storage = {
     let parsed;
     try{ parsed = JSON.parse(text); }
     catch(e){ Utils.toast('Import failed: invalid JSON.'); return false; }
+    // JSON.parse("null") (or any non-object JSON value) succeeds without throwing --
+    // validateAndRepair already treats that as an empty state, but the parsed.words access
+    // just below would crash on a null/primitive parsed value before reaching it.
+    if(!parsed || typeof parsed!=='object'){ Utils.toast('Import failed: invalid JSON.'); return false; }
     const incoming = validateAndRepair(parsed);
-    if(incoming.words.length===0 && (!parsed.words || parsed.words.length===0)){
+    // Reject on incoming.words.length alone -- a file whose parsed.words had entries that all
+    // failed repairWord (and were filtered out) used to slip past this guard (parsed.words.length
+    // was nonzero, so the old `&& (!parsed.words || ...)` clause was false), and replace mode
+    // would then swap in an empty bank.
+    if(incoming.words.length===0){
       Utils.toast('Import failed: no valid words found in file.'); return false;
     }
     if(mode==='replace'){
@@ -907,6 +979,14 @@ const Storage = {
       // pointing at now-deleted words.
       this.state.examSession = null;
       Exam.discard();
+      // A Daily Session in progress belongs to the pre-import bank -- without this, a later
+      // completed practice still sees Session.active===true and misroutes into finishPhase
+      // against a session log for words that no longer exist in the just-replaced state.
+      Session._unpatch();
+      Session.active = false;
+      Session.phase = 0;
+      Session.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
+      Session.clearPersisted();
       this.backfillDailyActivity();
     } else {
       const existingIds = new Set(this.state.words.map(w=>w.id));
@@ -916,11 +996,15 @@ const Storage = {
       this.state.errorLog = this.state.errorLog.concat(incoming.errorLog);
       if(incoming.settings.examDate) this.state.settings.examDate = incoming.settings.examDate;
 
-      this.state.sessionLog = this.state.sessionLog.concat(incoming.sessionLog).slice(-MERGE_LOG_CAP);
-      this.state.writingLog = this.state.writingLog.concat(incoming.writingLog).slice(-MERGE_LOG_CAP);
-      this.state.examLog = this.state.examLog.concat(incoming.examLog).slice(-MERGE_LOG_CAP);
-      this.state.fsrsReviewLog = this.state.fsrsReviewLog.concat(incoming.fsrsReviewLog).slice(-FSRS_REVIEW_LOG_CAP);
-      this.state.attempts = this.state.attempts.concat(incoming.attempts).slice(-ATTEMPTS_LOG_CAP);
+      // Sort by ts before capping -- otherwise an incoming backup older than local state
+      // (or one whose entries interleave with local ones) can have slice(-CAP) keep its
+      // older entries while dropping newer local ones. See KNOWN_ISSUES.md F1.
+      const byTsAsc = (a,b)=>a.ts-b.ts;
+      this.state.sessionLog = this.state.sessionLog.concat(incoming.sessionLog).sort(byTsAsc).slice(-MERGE_LOG_CAP);
+      this.state.writingLog = this.state.writingLog.concat(incoming.writingLog).sort(byTsAsc).slice(-MERGE_LOG_CAP);
+      this.state.examLog = this.state.examLog.concat(incoming.examLog).sort(byTsAsc).slice(-MERGE_LOG_CAP);
+      this.state.fsrsReviewLog = this.state.fsrsReviewLog.concat(incoming.fsrsReviewLog).sort(byTsAsc).slice(-FSRS_REVIEW_LOG_CAP);
+      this.state.attempts = this.state.attempts.concat(incoming.attempts).sort(byTsAsc).slice(-ATTEMPTS_LOG_CAP);
 
       // Union-by-key: an achievement already unlocked locally keeps its (earlier or equal)
       // unlockedAt rather than being overwritten by the incoming save's timestamp.
@@ -950,13 +1034,28 @@ const Storage = {
       // happening after that point just updates what a future reload would restore.
       if(!this.state.examSession && incoming.examSession) this.state.examSession = incoming.examSession;
 
-      // TODO: dailyActivity is not merged here -- incoming.dailyActivity is silently dropped.
-      // Unlike the arrays above, it's not a clean append: each date bucket is either a
+      // dailyActivity isn't a clean append like the arrays above: each date bucket is either a
       // canonical value (backfillDailyActivity's one-time reconstruction from word.history) or
       // an accumulation of live DailyActivity.bump writes since, and there's no way from the
       // merged data alone to tell which side's bucket for a given date is the more complete
-      // one, or to add two buckets without risking double-counting overlapping history. Needs
-      // its own reconciliation pass, not a bug fix folded into this one.
+      // one. Summing would double-count a date where both saves derived their bucket from the
+      // same underlying (overlapping) word history. Taking the max per counter is the safe
+      // conservative merge instead: for two backups of one evolving bank, the more complete
+      // side's bucket for a shared date is a superset of the other's, so max recovers it
+      // exactly without ever inflating a shared date via double-counting.
+      if(incoming.dailyActivity && typeof incoming.dailyActivity==='object'){
+        Object.keys(incoming.dailyActivity).forEach(date=>{
+          const inc = incoming.dailyActivity[date];
+          const cur = this.state.dailyActivity[date];
+          if(!cur){ this.state.dailyActivity[date] = inc; return; }
+          this.state.dailyActivity[date] = {
+            reviews: Math.max(cur.reviews, inc.reviews),
+            correct: Math.max(cur.correct, inc.correct),
+            teaching: Math.max(cur.teaching, inc.teaching),
+            newWords: Math.max(cur.newWords, inc.newWords)
+          };
+        });
+      }
     }
     this.save();
     return true;
@@ -1042,6 +1141,8 @@ const WordModel = {
       lastClozeIndex: -1,
       wordType: WORD_TYPES.some(t=>t.key===fields.wordType) ? fields.wordType : 'general',
       firstMasteryAt: null,
+      firstRetrieval: null, // {date, correct, ts} of the first non-teaching attempt -- see WordModel.logAttempt
+
       dims: freshDims(),
       fsrs: FSRSScheduler.freshWordFsrs(),
       teaching: { completed: false, currentStep: 1, errorHistory: [], stepResults: {} }
@@ -1139,6 +1240,14 @@ const WordModel = {
     // to null for callers that don't pass one (teaching has no track concept).
     const resolvedPhase = attemptsPhase!==undefined ? attemptsPhase : (entry.phase || null);
 
+    // Set once, and independent of the 200-cap slice above -- computeFirstPostTeachingRetention
+    // used to re-derive "first attempt" by scanning history for the first non-teaching entry,
+    // which silently became "oldest-surviving attempt" once the cap trimmed the real first one.
+    // Gated on resolvedPhase, not entry.phase, for the same reason the DailyActivity bump below
+    // is: a caller that passes attemptsPhase without entry.phase would otherwise stamp a
+    // teaching attempt as this word's first retrieval.
+    if(!word.firstRetrieval && resolvedPhase!=='teaching') word.firstRetrieval = { date: entry.date, correct: !!entry.correct, ts };
+
     // Phase D closeout: `teaching` is "teaching-step attempts" (matches how the backfill
     // counts it -- one per history entry with phase==='teaching'), bumped once here so
     // every one of the Teaching module's several call sites is covered without touching
@@ -1190,7 +1299,7 @@ const WordModel = {
       return;
     }
     if(correct){
-      const recentAtLevel = word.history.filter(h=>h.level===level).slice(-2);
+      const recentAtLevel = word.history.filter(h=>h.phase!=='teaching' && h.level===level).slice(-2);
       if(recentAtLevel.length>=2 && recentAtLevel.every(h=>h.correct) && level===word.levelState.level && word.levelState.level<4){
         word.levelState.level = Math.min(4, word.levelState.level+1);
       }
@@ -1230,7 +1339,8 @@ const WordModel = {
     if(!word.mnemonic) return false;
     if((word.srs.easeStreak||0) >= 4) return true;
     const fsrs = word.fsrs || {};
-    return FSRSScheduler.DIMENSIONS.some(dim => fsrs[dim] && fsrs[dim].stability >= FSRSScheduler.PRODUCTION_UNLOCK_STABILITY);
+    const dims = (typeof FSRSScheduler!=='undefined' && FSRSScheduler.DIMENSIONS) ? FSRSScheduler.DIMENSIONS : ['recognition','production','meaningRecall'];
+    return dims.some(dim => fsrs[dim] && fsrs[dim].stability >= FSRSScheduler.PRODUCTION_UNLOCK_STABILITY);
   },
 
   computeMastery(word){
@@ -1411,7 +1521,7 @@ const Practice = {
       // "recently failed" off that entry.
       const retrieval = w.history.filter(h=>h.phase!=='teaching');
       const last = retrieval[retrieval.length-1];
-      return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1 && !overdue.includes(w);
+      return last && !last.correct && typeof last.date==='string' && Utils.diffDays(last.date, Utils.todayISO())<=1 && !overdue.includes(w);
     }));
     const dueToday = Utils.shuffle(pool.filter(w=>WordModel.isDueToday(w) && !overdue.includes(w) && !failedRecent.includes(w)));
     let queue = overdue.concat(failedRecent, dueToday);
@@ -1473,6 +1583,11 @@ const Practice = {
     // would silently mislabel attempts[].track) -- every question this generates outside the
     // fsrs branch above is legacy-track by construction.
     q.track = 'legacy';
+    // Propagated the same way the fsrs branch above propagates it -- only runDimensionPractice
+    // sets item.dimension on a legacy item today (to name which dim it wants credited, since
+    // the level->type dispatch above is many-to-one); the normal ladder/category items never
+    // set it, so this is a no-op for them.
+    if(item.dimension) q.dimension = item.dimension;
     return q;
   },
 
@@ -1562,7 +1677,20 @@ const Practice = {
 
   genCloze(word){
     const c = WordModel.getClozeSentence(word);
-    if(!c) return this.genCuedRecall(word);
+    // getClozeSentence mutates word.lastClozeIndex (even on the null branch below) but doesn't
+    // persist it -- flush now so a refresh before this question is answered/graded doesn't
+    // lose the rotation and hand back a repeat sentence next time.
+    Storage.save();
+    if(!c){
+      // No usable cloze sentence (empty cloze array, unblankable production sentence, no ___
+      // placeholder). Falling through to genCuedRecall used to silently record this level-3
+      // "contextual comprehension" ladder rung as meaningRecall/formRecall instead -- exactly
+      // the dimension the ladder was trying to train. Keep type:'cloze' (self-graded, since
+      // there's no sentence to auto-blank) so recordDimForQuestion still attributes the
+      // attempt to contextualComprehension.
+      const meaning = (word.meaning||'').trim();
+      return { type:'cloze', word, level:3, promptTitle:'Use it in context', prompt: 'Recall or invent a sentence using "'+word.word+'" in context.' + (meaning ? '  (Meaning: ' + meaning + ')' : ''), autoGrade:false };
+    }
     return { type:'cloze', word, level:3, promptTitle:'Fill in the blank', prompt: c.display, correctAnswer: c.answer, autoGrade:true };
   },
 
@@ -1683,6 +1811,10 @@ const Practice = {
         idx: r.idx, wordId: r.word.id, userVal: r.userVal, correct: r.correct,
         rating: r.rating||null, category: r.category||null, question: this.serializeQuestion(r.question)
       }))
+      // Session (Daily Session phase nav) state used to be piggybacked here, but that meant
+      // every phase boundary (which nulls Practice.session/practiceSession via #doneBtn ->
+      // clearPersisted) lost it too -- Session now carries its own durable record, see
+      // Session.persist/restore/clearPersisted and Storage.state.sessionState.
     };
     Storage.save();
   },
@@ -1692,23 +1824,84 @@ const Practice = {
   restore(){
     const saved = Storage.state.practiceSession;
     if(!saved) return;
-    const queue = saved.queue.map(item=>{
+
+    // old -> new position map. A queue item whose word no longer resolves is dropped (word
+    // deleted since the save); every surviving item's ORIGINAL index maps to its NEW index.
+    // results[].idx and session.idx are both positions in the ORIGINAL queue, so both must
+    // go through this map.
+    const originalToNew = {};
+    let newI = 0;
+    const queue = saved.queue.map((item, i)=>{
+      // Shape-gate before touching item.wordId -- a null/malformed element (hand-edited or
+      // corrupted save) would otherwise crash here before ever reaching .filter(Boolean).
+      if(!item || typeof item.wordId!=='string' || typeof item.level!=='number') return null;
+      // dimension must be one of the three strings DueQueue.buildDimensionItems produces (or
+      // absent, for a legacy-track item) -- an invalid value here restores fine but crashes
+      // later inside FSRSScheduler.grade() on word.fsrs[dimension]. An fsrs-track item with no
+      // dimension at all can't be graded either, so it's rejected the same way.
+      const validDim = item.dimension==null || ['recognition','meaningRecall','production'].includes(item.dimension);
+      if(!validDim) return null;
+      if(item.track==='fsrs' && !item.dimension) return null;
       const word = Storage.state.words.find(w=>w.id===item.wordId);
-      return word ? { word, level: item.level, drillType: item.drillType||undefined, track: item.track||undefined, dimension: item.dimension||undefined } : null;
+      if(!word) return null;
+      originalToNew[i] = newI++;
+      return { word, level: item.level, drillType: item.drillType||undefined, track: item.track||undefined, dimension: item.dimension||undefined };
     }).filter(Boolean);
+
     if(!queue.length){ this.clearPersisted(); return; }
-    const results = (saved.results||[]).map(r=>{
+
+    // saved.results||[] only falls back for a falsy value -- a truthy non-array (an object,
+    // string, or number surviving a hand-edited/corrupted or imported save) would reach
+    // .map() and throw, since validateAndRepair's practiceSession gate only shape-checks
+    // .queue, not .results, before accepting the object wholesale.
+    const results = Array.isArray(saved.results) ? saved.results.map(r=>{
+      // Same shape-gate as the queue map above -- a null/malformed result element would
+      // otherwise crash on r.wordId before the existing .filter(Boolean) chain can drop it.
+      if(!r || typeof r.wordId!=='string') return null;
       const word = Storage.state.words.find(w=>w.id===r.wordId);
       if(!word) return null;
       const question = this.deserializeQuestion(r.question);
       if(!question) return null; // dropped rather than left null -- renderPracticeReviewCard reads result.question directly
-      return { idx:r.idx, word, question, userVal:r.userVal, correct:r.correct, rating:r.rating, category:r.category };
-    }).filter(Boolean);
+      // r.idx is an ORIGINAL queue position. Remap it. If that position no longer survives in
+      // the new queue (its item was dropped), drop this result too: renderPracticeReviewCard's
+      // find(r=>r.idx===s.idx) would otherwise match it at a position it no longer belongs to.
+      if(originalToNew[r.idx]===undefined) return null;
+      return { idx:originalToNew[r.idx], word, question, userVal:r.userVal, correct:r.correct, rating:r.rating, category:r.category };
+    }).filter(Boolean) : [];
+
+    // Resume position: find the NEW index of the ORIGINAL item at saved.idx, or (if that item
+    // was itself dropped) the next surviving original index at or after saved.idx. Walk forward
+    // from saved.idx to find it.
+    let resumeIdx = queue.length;
+    for(let i = saved.idx; i < saved.queue.length; i++){
+      if(originalToNew[i] !== undefined){ resumeIdx = originalToNew[i]; break; }
+    }
+
+    // savedIdx (the "Back" return point) is the same kind of ORIGINAL queue position as
+    // saved.idx and results[].idx, so it needs the same remap -- mirrors the block in
+    // Views._pruneDeletedWord, including the fallback: walk forward to the next surviving
+    // original index, and if there is none, park at queue.length with reviewing off (that
+    // pairing is what stops returnToCurrent from consuming the sentinel).
+    let restoredSavedIdx = saved.savedIdx;
+    let restoredReviewing = !!saved.reviewing;
+    if(restoredSavedIdx!=null){
+      if(originalToNew[restoredSavedIdx]!==undefined){
+        restoredSavedIdx = originalToNew[restoredSavedIdx];
+      } else {
+        let newSavedIdx = null;
+        for(let i = restoredSavedIdx; i < saved.queue.length; i++){
+          if(originalToNew[i]!==undefined){ newSavedIdx = originalToNew[i]; break; }
+        }
+        if(newSavedIdx!==null){ restoredSavedIdx = newSavedIdx; }
+        else { restoredSavedIdx = queue.length; restoredReviewing = false; }
+      }
+    }
+
     this.session = {
       queue, results, mode: saved.mode,
-      idx: Utils.clamp(saved.idx, 0, queue.length),
-      reviewing: !!saved.reviewing,
-      savedIdx: saved.savedIdx
+      idx: Utils.clamp(resumeIdx, 0, queue.length),
+      reviewing: restoredReviewing,
+      savedIdx: restoredSavedIdx
     };
   }
 };
@@ -1722,6 +1915,7 @@ const App = {
     Storage.load();
     this.applyTheme();
     Practice.restore();
+    Session.restore();
     Exam.restore();
     document.getElementById('tabs').addEventListener('click', (e)=>{
       const btn = e.target.closest('button[data-tab]');
@@ -1738,12 +1932,18 @@ const App = {
     // status persist() debounces at meaningfully-frequent input); other statuses have already
     // been flushed synchronously at their own transitions.
     document.addEventListener('visibilitychange', ()=>{
-      if(document.visibilityState==='hidden' && Exam.status==='running') Exam._flushPersist();
+      // 'review' also debounces via persist() (the checklist/category button handlers in
+      // drawReview) -- without this, a tick made just before closing the tab is lost the same
+      // way a mid-typing 'running' edit would be.
+      if(document.visibilityState==='hidden' && (Exam.status==='running' || Exam.status==='review')) Exam._flushPersist();
     });
     window.addEventListener('beforeunload', ()=>{
-      if(Exam.status==='running') Exam._flushPersist();
+      if(Exam.status==='running' || Exam.status==='review') Exam._flushPersist();
     });
-    this.showTab(Practice.session ? 'practice' : 'dashboard');
+    // Session.active can be true with Practice.session null (an interstitial screen, not a
+    // graded queue) -- route to the practice tab for that case too, same condition showTab's
+    // own tab==='practice' branch uses to choose between the phase screen and Practice Home.
+    this.showTab((Practice.session || Session.active) ? 'practice' : 'dashboard');
   },
 
   updateDueBadge(){
@@ -1779,7 +1979,10 @@ const App = {
     document.getElementById('view-'+tab).classList.add('active');
     this.updateDueBadge();
     if(tab==='dashboard') Views.renderDashboard();
-    else if(tab==='practice') Views.renderPracticeHome();
+    // A Daily Session interstitial (between graded phases) has Session.active true with
+    // Practice.session null -- Views.renderPracticeHome's own Practice.session check can't
+    // route to it, so it would otherwise show Practice Home instead of the phase screen.
+    else if(tab==='practice'){ (Session.active && !Practice.session) ? Session.renderPhase() : Views.renderPracticeHome(); }
     else if(tab==='add') Views.renderAddForm();
     else if(tab==='bank') Views.renderBank();
     else if(tab==='errors') Views.renderErrors();
@@ -1814,7 +2017,7 @@ const Views = {
       // shouldn't be classified as "recently failed" off that entry.
       const retrieval = w.history.filter(h=>h.phase!=='teaching');
       const last = retrieval[retrieval.length-1];
-      return last && !last.correct && Utils.diffDays(last.date, Utils.todayISO())<=1;
+      return last && !last.correct && typeof last.date==='string' && Utils.diffDays(last.date, Utils.todayISO())<=1;
     });
     const catTotals = {};
     ERROR_CATEGORIES.forEach(c=>catTotals[c]=0);
@@ -2051,11 +2254,21 @@ const Views = {
       });
       const copyPromptBtn = el.querySelector('#copyAiPromptBtn');
       if(copyPromptBtn) copyPromptBtn.addEventListener('click', ()=>{
-        navigator.clipboard.writeText(AI_GENERATOR_PROMPT).then(()=>{
-          Utils.toast('Prompt copied — paste it into your AI agent, add your word list, and paste its output below.');
-        }).catch(()=>{
+        // navigator.clipboard can be absent (insecure context / older browser) or present but
+        // throw synchronously (document not focused) -- guard both before ever calling it.
+        try{
+          if(navigator.clipboard && typeof navigator.clipboard.writeText==='function'){
+            navigator.clipboard.writeText(AI_GENERATOR_PROMPT).then(()=>{
+              Utils.toast('Prompt copied — paste it into your AI agent, add your word list, and paste its output below.');
+            }).catch(()=>{
+              Utils.toast('Could not copy automatically — select and copy the prompt manually.');
+            });
+          } else {
+            Utils.toast('Could not copy automatically — select and copy the prompt manually.');
+          }
+        }catch(e){
           Utils.toast('Could not copy automatically — select and copy the prompt manually.');
-        });
+        }
       });
     }
   },
@@ -2114,6 +2327,13 @@ const Views = {
     });
 
     if(addedWords.length) Storage.save();
+    // This path pushes straight to Storage.state.words rather than going through
+    // Views.handleSaveWord, so Session's Phase 2 Add-flow patch (which only wraps
+    // handleSaveWord) never sees these words -- bump the session log directly instead, same
+    // as the patch's own wrapper would have done per word. Gated on Session.active, not on
+    // the patch being live: reaching the Add tab from the tab bar during a session leaves
+    // _origHandleSaveWord null, and those words still belong in the session's count.
+    if(addedWords.length && Session.active) Session.noteWordsAdded(addedWords.length);
 
     if(failures.length){
       errBox.innerHTML = failures.map(f=>'Line '+f.line.num+': '+Utils.escapeHtml(f.message)).join('<br>');
@@ -2126,7 +2346,10 @@ const Views = {
         beginRow.innerHTML = '<button type="button" class="btn primary small" id="beginTeachPartialBtn">▶ Begin Teaching Added Word(s)</button>';
         okBox.after(beginRow);
         beginRow.querySelector('#beginTeachPartialBtn').addEventListener('click', ()=>{
-          Teaching.startQueue(addedWords, ()=>{ App.showTab('bank'); Utils.toast('Teaching complete for all imported words.'); });
+          // Calls Teaching.startQueue directly rather than through Views.renderBeginTeaching,
+          // so Session's Phase 2 patch (which wraps renderBeginTeaching, not startQueue) never
+          // gets a chance to redirect the completion callback -- check the patch directly here.
+          Teaching.startQueue(addedWords, Session._origHandleSaveWord ? ()=>Session._backToSession() : ()=>{ App.showTab('bank'); Utils.toast('Teaching complete for all imported words.'); });
         });
       }
       return;
@@ -2139,6 +2362,7 @@ const Views = {
   },
 
   renderBeginTeaching(words, onAllComplete){
+    if(!words || words.length===0) return;
     const el = document.getElementById('view-add');
     const list = words.map(w=>'<li>'+Utils.escapeHtml(w.word)+'</li>').join('');
     el.innerHTML = '<div class="card center">' +
@@ -2218,6 +2442,69 @@ const Views = {
   },
 
   /* ---------- WORD BANK ---------- */
+  // Deleting a word from the bank must also drop it from any LIVE in-memory holders --
+  // Practice.session's queue and Exam's targetWords/checklist -- not just Storage.state.words.
+  // Without this, the next persist()/_flushPersist() saves the now-stale id, and the next
+  // restore() self-heals by dropping it -- but in the meantime the user still sees a card or
+  // exam target for a word that no longer exists.
+  _pruneDeletedWord(id){
+    const s = Practice.session;
+    if(s){
+      const origIdx = s.idx;
+      const origLen = s.queue.length;
+      // Mirrors Practice.restore's old->new position map so results[].idx stays comparable to
+      // the pruned queue -- canGoBack/renderPracticeReviewCard/returnToCurrent all compare
+      // r.idx===s.idx, and without remapping, a stale result matches a slot that now holds a
+      // different item. Duplicated here rather than shared with Practice.restore -- see
+      // Practice.restore's own inline version, left untouched.
+      const originalToNew = {};
+      let newI = 0;
+      s.queue = s.queue.filter((item, i)=>{
+        if(item.word.id===id) return false;
+        originalToNew[i] = newI++;
+        return true;
+      });
+      s.results = s.results.map(r=>{
+        if(originalToNew[r.idx]===undefined) return null;
+        r.idx = originalToNew[r.idx];
+        return r;
+      }).filter(Boolean);
+      if(!s.queue.length){
+        Practice.session = null;
+        // Sync the persisted session immediately -- otherwise a reload rehydrates from the
+        // stale (still word-referencing) persisted queue and only self-heals once
+        // Practice.restore's own !queue.length branch runs, showing a stale card meanwhile.
+        Practice.clearPersisted();
+      } else {
+        let resumeIdx = s.queue.length;
+        for(let i = origIdx; i < origLen; i++){
+          if(originalToNew[i] !== undefined){ resumeIdx = originalToNew[i]; break; }
+        }
+        s.idx = Utils.clamp(resumeIdx, 0, s.queue.length);
+        // s.idx was just remapped above -- s.savedIdx (the "Back" return point) is the same
+        // kind of original-queue position and needs the same remap, or returning from a
+        // review card after this prune lands on whatever now sits at the old numeric slot.
+        if(s.savedIdx!=null){
+          if(originalToNew[s.savedIdx]!==undefined){
+            s.savedIdx = originalToNew[s.savedIdx];
+          } else {
+            let newSavedIdx = null;
+            for(let i = s.savedIdx; i < origLen; i++){
+              if(originalToNew[i]!==undefined){ newSavedIdx = originalToNew[i]; break; }
+            }
+            if(newSavedIdx!==null){ s.savedIdx = newSavedIdx; }
+            else { s.savedIdx = s.queue.length; s.reviewing = false; }
+          }
+        }
+        Practice.persist();
+      }
+    }
+    if(Exam.targetWords && Exam.targetWords.some(w=>w.id===id)){
+      Exam.targetWords = Exam.targetWords.filter(w=>w.id!==id);
+      delete Exam.checklist[id];
+      Exam._flushPersist();
+    }
+  },
   renderBank(){
     const el = document.getElementById('view-bank');
     const words = Storage.state.words.slice().sort((a,b)=> a.word.localeCompare(b.word));
@@ -2288,6 +2575,7 @@ const Views = {
         Modal.confirm('Delete "'+(delWord?delWord.word:'')+'"? This cannot be undone.', ()=>{
           Storage.state.words = Storage.state.words.filter(x=>x.id!==id);
           Storage.save();
+          this._pruneDeletedWord(id);
           this.renderBank();
           Utils.toast('Word deleted.');
         });
@@ -2408,7 +2696,16 @@ const Views = {
         // them, a practice session or exam already open in another tab (or resumed via
         // Practice.restore/Exam.restore before this reload) would keep operating on
         // now-deleted words. defaultState() already gives examSession/practiceSession: null.
-        Storage.state = defaultState(); Practice.session = null; Exam.discard(); Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
+        Storage.state = defaultState(); Practice.session = null;
+        // Same reasoning as importJSON's replace-mode reset: a Daily Session in progress
+        // belongs to the just-erased bank -- without this, a later completed practice still
+        // misroutes into finishPhase against a stale session log.
+        Session._unpatch();
+        Session.active = false;
+        Session.phase = 0;
+        Session.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
+        Session.clearPersisted();
+        Exam.discard(); Storage.save(); App.showTab('dashboard'); Utils.toast('All data erased.');
       });
     });
   },
@@ -2424,8 +2721,8 @@ const Views = {
     const awaitingTeaching = words.filter(w=>!w.teaching || !w.teaching.completed);
     el.innerHTML = '<div class="card"><h2>Practice</h2>' +
       '<div class="grid" style="margin-bottom:14px;">' +
-      '<div class="stat '+(overdue?'bad':'')+'"><div class="num">'+overdue+'</div><div class="label">Overdue</div></div>' +
-      '<div class="stat"><div class="num">'+due+'</div><div class="label">Due Today</div></div>' +
+      '<div class="stat '+(overdue?'bad':'')+'"><div class="num">'+overdue+'</div><div class="label">Overdue (legacy SRS)</div></div>' +
+      '<div class="stat"><div class="num">'+due+'</div><div class="label">Due Today (legacy SRS)</div></div>' +
       '<div class="stat '+(awaitingTeaching.length?'warn':'')+'"><div class="num">'+awaitingTeaching.length+'</div><div class="label">Awaiting Teaching</div></div></div>' +
       '<div class="btn-row">' +
       '<button class="btn primary" id="pReviewBtn" '+(taught.length?'':'disabled')+'>Review Due/Overdue</button>' +
@@ -2457,6 +2754,10 @@ const Views = {
       // dashboard. Same class of bug as #doneBtn's own wasActive fix: reading session state
       // after a fresh flow has already mutated it.
       Session.active = false;
+      // In-memory disown alone leaves Storage.state.sessionState (see Session.persist)
+      // pointing at active:true -- a reload then calls Session.restore() and resurrects the
+      // abandoned Daily Session even though this in-memory flag is already false.
+      Session.clearPersisted();
       opts = opts || {};
       const queue = Practice.buildDueQueue(opts);
       if(queue.length===0){
@@ -2484,10 +2785,17 @@ const Views = {
     // empty-pool early return; disown itself only runs once the user has confirmed).
     const proceed = ()=>{
       Session.active = false;
+      // See runFreePractice's comment -- disowning in memory only isn't enough; the persisted
+      // sessionState must be cleared too, or a reload resurrects the abandoned Daily Session.
+      Session.clearPersisted();
       const level = DIM_PRACTICE_LEVEL[dimKey] || 2;
       const words = Storage.state.words.filter(w=>w.dims && w.dims[dimKey] && w.dims[dimKey].fail>0);
       if(words.length===0){ Utils.toast('No words have failed this dimension yet.'); return; }
-      const queue = words.map(w=>({ track:'legacy', word:w, level }));
+      // dimension: dimKey names which dim this queue targets -- generateQuestion's level-based
+      // dispatch and recordDimForQuestion's type-based inference are both fixed many-to-one
+      // (DIM_PRACTICE_LEVEL groups multiple dims per level), so without this the intended dim
+      // is lost and an unrelated sibling dim gets credited instead. See KNOWN_ISSUES.md X1.
+      const queue = words.map(w=>({ track:'legacy', word:w, level, dimension: dimKey }));
       Practice.session = { queue, idx:0, results:[], mode:'free' };
       Practice.persist();
       App.showTab('practice');
@@ -2501,6 +2809,9 @@ const Views = {
     // See runFreePractice's comment -- same confirm-before-overwrite and disown-on-entry fixes.
     const proceed = ()=>{
       Session.active = false;
+      // See runFreePractice's comment -- disowning in memory only isn't enough; the persisted
+      // sessionState must be cleared too, or a reload resurrects the abandoned Daily Session.
+      Session.clearPersisted();
       const queue = Practice.buildProductionQueue(8);
       if(queue.length===0){ Utils.toast('No words are ready for production drills yet.'); return; }
       Practice.session = { queue, idx:0, results:[], mode:'production' };
@@ -2715,6 +3026,15 @@ const Views = {
     // number of hints given, since this first wrong answer landed in history/attempts[] above
     // but nowhere else.
     DailyActivity.bump(Utils.todayISO(), { reviews: 1 });
+    // Same reasoning as logAttempt above -- without this, the pre-hint miss landed in
+    // history/attempts[]/dailyActivity but never in dims, so dimension fail counts under-
+    // reported on every hinted item. Keys off question.type, so it's correct for both legacy
+    // and fsrs-track questions with no extra branching needed here.
+    this.recordDimForQuestion(q, false);
+    // Flush the initial wrong attempt immediately -- the hint UI is ephemeral and a refresh
+    // between hint and retry must not lose this measurement. (Do NOT add Practice.persist()
+    // here; only the log needs to survive.)
+    Storage.save();
     // Rendering-only from here -- extracted into _renderHintUI so renderPracticeCard can
     // redraw this same UI on a Back -> Return to current card round trip (with the
     // in-progress second attempt restored) without re-running the log/bump above, which must
@@ -2866,6 +3186,19 @@ const Views = {
 
   recordDimForQuestion(question, success){
     const word = question.word;
+    // An explicit question.dimension on a LEGACY-track question (set only for
+    // runDimensionPractice's items, see generateQuestion) names the dim it was actually meant
+    // to exercise, since DIM_PRACTICE_LEVEL groups multiple dims onto the same level and the
+    // type-based inference below can't tell them apart. Gated on track!=='fsrs' -- an FSRS-track
+    // question also carries question.dimension (recognition/meaningRecall/production, a
+    // different namespace gradeFsrs uses for word.fsrs, not word.dims), and always did before
+    // this field existed on legacy items; falling through to the type-based inference for it
+    // keeps that pre-existing behavior (e.g. an FSRS meaningRecall review's 'cued' question
+    // still credits both meaningRecall AND formRecall here, same as a legacy cued-recall item).
+    if(question.track!=='fsrs' && question.dimension){
+      DimModel.record(word, question.dimension, success);
+      return;
+    }
     if(question.type==='recognition') DimModel.record(word, 'meaningRecognition', success);
     else if(question.type==='cued'){ DimModel.record(word, 'meaningRecall', success); DimModel.record(word, 'formRecall', success); }
     else if(question.type==='cloze') DimModel.record(word, 'contextualComprehension', success);
@@ -3131,11 +3464,27 @@ const Exam = {
     this.text = saved.text;
     const resolvedWords = [];
     const resolvedChecklist = {};
+    // De-dupe by id -- a corrupted/hand-edited save with a repeated targetWordIds entry would
+    // otherwise push the same word into targetWords twice, and submitReview (which iterates
+    // targetWords) would then double-log ErrorIntegration.recordProductionSuccess/Error and
+    // double-push into examLog's targetWords for that one word.
+    const seenIds = new Set();
     saved.targetWordIds.forEach(id=>{
+      if(seenIds.has(id)) return;
       const w = Storage.state.words.find(x=>x.id===id);
       if(!w) return;
+      seenIds.add(id);
       resolvedWords.push(w);
-      resolvedChecklist[id] = saved.checklist[id] || { outcome:null, category:null };
+      // Validate the checklist entry itself -- `saved.checklist[id] || {...}` only falls back
+      // for a falsy value. A truthy non-object (a corrupted/hand-edited save could carry a
+      // number, string, or boolean here) would be used as-is, and drawReview's click handlers
+      // assign properties onto it (`this.checklist[wid].outcome = ...`) -- under "use strict"
+      // that throws when the target isn't an object. Rebuild a clean {outcome,category} shape
+      // instead of trusting the persisted entry, same validation drawReview/checkReady expect.
+      const c = saved.checklist[id];
+      const outcome = (c && typeof c==='object' && ['correct','incorrect','none'].includes(c.outcome)) ? c.outcome : null;
+      const category = (c && typeof c==='object' && typeof c.category==='string' && ERROR_CATEGORIES.includes(c.category)) ? c.category : null;
+      resolvedChecklist[id] = { outcome, category };
     });
     this.targetWords = resolvedWords;
     this.checklist = resolvedChecklist;
@@ -3150,6 +3499,12 @@ const Exam = {
       // countdown that's already at (or past) zero; move straight to the review checklist
       // with whatever text survived, same as tick() reaching 0 normally would.
       if(this.remainingSec<=0) this.status = 'review';
+      // App.init calls restore() well before the user ever opens the Writing tab -- without
+      // starting the interval here, ensureTimer() only fires on Exam.render(), so wall-clock
+      // time already subtracted above then sits frozen (no further ticks, no further
+      // _flushPersist) until that first navigation, effectively refunding the user that time.
+      // Guarded by the reassignment above: skip if this.status just flipped to 'review'.
+      if(this.status==='running') this.ensureTimer();
     } else {
       this.remainingSec = saved.remainingSec;
     }
@@ -3477,7 +3832,11 @@ function computeFirstPostTeachingRetention(words){
   let y = 0, n = 0;
   (words||[]).forEach(w=>{
     if(!w || !w.teaching || !w.teaching.completed) return;
-    const first = (w.history||[]).find(h=>h && h.phase!=='teaching');
+    // Prefer the durable firstRetrieval snapshot (set once in WordModel.logAttempt) -- the
+    // history scan below is the migration path for saves made before that field existed; it
+    // used to silently degrade to "oldest-surviving attempt" once the 200-entry cap trimmed
+    // the genuine first one off the front of history.
+    const first = w.firstRetrieval || (w.history||[]).find(h=>h && h.phase!=='teaching');
     if(!first) return;
     y++;
     if(first.correct) n++;
@@ -3729,7 +4088,8 @@ function computeArmComparison(words, attempts){
       legacyIntervalN++;
     }
     if(tracked.some(a=>a.track==='fsrs')){
-      const activeDims = FSRSScheduler.DIMENSIONS.filter(d=>w.fsrs && w.fsrs[d] && w.fsrs[d].reps>0);
+      const dims = (typeof FSRSScheduler!=='undefined' && FSRSScheduler.DIMENSIONS) ? FSRSScheduler.DIMENSIONS : ['recognition','production','meaningRecall'];
+      const activeDims = dims.filter(d=>w.fsrs && w.fsrs[d] && w.fsrs[d].reps>0);
       if(activeDims.length){
         fsrsIntervalSum += activeDims.reduce((s,d)=>s+(w.fsrs[d].scheduled_days||0), 0) / activeDims.length;
         fsrsIntervalN++;
@@ -3762,7 +4122,7 @@ function computeArmComparison(words, attempts){
   });
 
   return {
-    fsrsGeneration: FSRSScheduler.FSRS_GENERATION,
+    fsrsGeneration: (typeof FSRSScheduler!=='undefined' && FSRSScheduler.FSRS_GENERATION) || 0,
     legacy: { meanInterval: legacyIntervalN ? legacyIntervalSum/legacyIntervalN : null, n: legacyIntervalN },
     fsrs: { meanInterval: fsrsIntervalN ? fsrsIntervalSum/fsrsIntervalN : null, n: fsrsIntervalN },
     // reviewsToStable.mean is the headline: unsegmented, mean count of ALL attempts (both
@@ -3805,6 +4165,15 @@ const Analytics = {
   ],
 
   render(){
+    try{
+      this._renderInner();
+    }catch(err){
+      const el = document.getElementById('view-analytics');
+      el.innerHTML = '<div class="card empty-state"><div class="big">⚠️</div><h2>Analytics failed to render</h2><p>'+String(err && err.message || err)+'</p></div>';
+    }
+  },
+
+  _renderInner(){
     const el = document.getElementById('view-analytics');
     this.destroyCharts();
 
@@ -3847,29 +4216,50 @@ const Analytics = {
       '</div>';
 
     // Learning Health -- Tier-1 rigor charts read straight off state.fsrsReviewLog via the
-    // pure compute* functions above. All three FSRS-log charts share one data gate (< 20
-    // logged reviews total): below that, a raw Brier score or per-bucket rate would look far
-    // more authoritative than a sample that small actually supports, so the card shows a
-    // placeholder instead of a chart. The consistency heatmap (Phase D) reads dailyActivity
-    // instead, so it's NOT behind that gate -- it renders (possibly all-empty) regardless.
+    // pure compute* functions above. Each of the three FSRS-log charts is gated on its OWN
+    // usable-entry count (< 20 -> placeholder instead of a chart, same rationale as before:
+    // a raw Brier score or per-bucket rate would look far more authoritative than a sample
+    // that small actually supports) -- NOT a shared count, because a State.New grade has
+    // predictedR===null (nothing to calibrate against yet) while still carrying a valid
+    // stabilityAfter/elapsedDays, so calibration's usable-n can lag stability/retention's by
+    // a lot for a new user. The consistency heatmap (Phase D) reads dailyActivity instead, so
+    // it's NOT behind any of these gates -- it renders (possibly all-empty) regardless.
     const reviewLog = Storage.state.fsrsReviewLog || [];
-    const hasEnoughReviewData = reviewLog.length >= 20;
     const brier = computeBrier(reviewLog);
+    // Each Learning Health chart needs a different field on the log entry (predictedR for
+    // calibration, stabilityAfter for stability growth, elapsedDays+outcome for retention),
+    // and a State.New grade legitimately has predictedR===null (no prior state to predict
+    // from) while still carrying stabilityAfter/elapsedDays -- so these three counts diverge
+    // for a new user and must gate their own card independently, not share one count.
+    const calibrationN = brier.n;
+    // Raw entry count isn't what renderStabilityGrowthChart actually needs -- it hides any
+    // dimension with fewer than 5 successive review-indices (a 1-2 point "line" is noise, not
+    // a trend), so the gate here must mirror that same per-dimension depth check, not a flat
+    // entry count -- otherwise the canvas gets created (stabilityN looks big) while the chart
+    // itself has zero qualifying dimensions to draw, i.e. an empty axes-only chart.
+    const growthPreview = computeStabilityGrowth(reviewLog);
+    const stabilityDimCount = Object.keys(growthPreview).filter(d=>growthPreview[d].length>=5).length;
+    const retentionN = reviewLog.filter(e=>e && typeof e.elapsedDays==='number' && isFinite(e.elapsedDays) && typeof e.outcome==='boolean').length;
+    const CHART_MIN = 20;
+    const hasCalibrationData = calibrationN >= CHART_MIN;
+    const hasStabilityData = stabilityDimCount > 0;
+    const hasRetentionData = retentionN >= CHART_MIN;
     const fptr = computeFirstPostTeachingRetention(words);
-    const lhPlaceholder = '<div class="chart-wrap lh-placeholder">Not enough data yet ('+reviewLog.length+'/20)</div>';
+    const placeholderFor = n => '<div class="chart-wrap lh-placeholder">Not enough data yet ('+n+'/'+CHART_MIN+')</div>';
+    const stabilityPlaceholder = '<div class="chart-wrap lh-placeholder">Not enough data yet — needs 5+ reviews in a dimension</div>';
 
     html += '<h2 class="lh-section-title">📈 Learning Health</h2>' +
       '<div class="analytics-grid">' +
       '<div class="chart-card"><h3>Prediction Calibration</h3>' +
-        (hasEnoughReviewData
-          ? '<div class="chart-sub">Brier score '+brier.value.toFixed(3)+' (lower is better, n='+brier.n+')</div><div class="chart-wrap"><canvas id="chartCalibration"></canvas></div>'
-          : '<div class="chart-sub">Predicted vs. actual recall probability</div>'+lhPlaceholder) +
+        (hasCalibrationData
+          ? '<div class="chart-sub">Brier score '+(brier.value==null ? '—' : brier.value.toFixed(3))+' (lower is better, n='+brier.n+')</div><div class="chart-wrap"><canvas id="chartCalibration"></canvas></div>'
+          : '<div class="chart-sub">Predicted vs. actual recall probability</div>'+placeholderFor(calibrationN)) +
         '</div>' +
       '<div class="chart-card"><h3>Stability Growth by Dimension</h3><div class="chart-sub">Median stability per review index, by FSRS dimension</div>' +
-        (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartStabilityGrowth"></canvas></div>' : lhPlaceholder) +
+        (hasStabilityData ? '<div class="chart-wrap"><canvas id="chartStabilityGrowth"></canvas></div>' : stabilityPlaceholder) +
         '</div>' +
       '<div class="chart-card"><h3>Retention by Interval</h3><div class="chart-sub">Success rate vs. days since last review</div>' +
-        (hasEnoughReviewData ? '<div class="chart-wrap"><canvas id="chartRetentionInterval"></canvas></div>' : lhPlaceholder) +
+        (hasRetentionData ? '<div class="chart-wrap"><canvas id="chartRetentionInterval"></canvas></div>' : placeholderFor(retentionN)) +
         '</div>' +
       this.renderHeatmapCard() +
       this.renderRetentionGapsCard() +
@@ -3905,11 +4295,9 @@ const Analytics = {
     // Left defined, and its data (computeFailuresByDimension) is still available, per
     // instruction: "keep the data available, just stop rendering it."
 
-    if(hasEnoughReviewData){
-      this.renderCalibrationChart(theme, reviewLog);
-      this.renderStabilityGrowthChart(theme, reviewLog);
-      this.renderRetentionIntervalChart(theme, reviewLog);
-    }
+    if(hasCalibrationData) this.renderCalibrationChart(theme, reviewLog);
+    if(hasStabilityData) this.renderStabilityGrowthChart(theme, reviewLog, growthPreview);
+    if(hasRetentionData) this.renderRetentionIntervalChart(theme, reviewLog);
   },
 
   destroyCharts(){
@@ -4332,8 +4720,8 @@ const Analytics = {
     });
   },
 
-  renderStabilityGrowthChart(theme, log){
-    const growth = computeStabilityGrowth(log);
+  renderStabilityGrowthChart(theme, log, precomputedGrowth){
+    const growth = precomputedGrowth || computeStabilityGrowth(log);
     const colors = this.LH_DIM_COLORS(theme);
     // A dimension's line is hidden entirely below 5 points -- a 1- or 2-point "line" is
     // just noise, not a trend.
@@ -4374,7 +4762,7 @@ const Analytics = {
     const buckets = computeRetentionByInterval(log);
     this.charts.retentionInterval = new Chart(document.getElementById('chartRetentionInterval'), {
       type: 'bar',
-      data: { labels: buckets.map(b=>b.label), datasets: [{ label:'Retention', data: buckets.map(b=>b.rate===null?0:Math.round(b.rate*100)), backgroundColor: theme.accent, borderRadius: 6, barThickness: 22 }] },
+      data: { labels: buckets.map(b=>b.label), datasets: [{ label:'Retention', data: buckets.map(b=>b.rate===null?null:Math.round(b.rate*100)), backgroundColor: theme.accent, borderRadius: 6, barThickness: 22 }] },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
@@ -4425,7 +4813,7 @@ const Session = {
     Views.handleSaveWord = function(form, existing){
       const before = Storage.state.words.length;
       Session._origHandleSaveWord.call(Views, form, existing);
-      if(Storage.state.words.length>before) Session.log.newAdded++;
+      if(Storage.state.words.length>before) Session.noteWordsAdded(1);
     };
     Views.renderBeginTeaching = function(words, onAllComplete){
       Session._origRenderBeginTeaching.call(Views, words, ()=>Session._backToSession());
@@ -4459,9 +4847,44 @@ const Session = {
     Session.renderPhase();
   },
 
+  // Durable state for the Daily Session itself (active flag / phase index / running log) --
+  // separate from Practice.persist/restore, which only covers the in-progress practice queue
+  // and gets nulled at every phase boundary (#doneBtn -> Practice.clearPersisted). Without a
+  // carrier of its own, a refresh on any interstitial screen (where Practice.session is null
+  // by design) silently dropped the whole Daily Session back to these defaults.
+  persist(){
+    Storage.state.sessionState = { active: this.active, phase: this.phase, log: Object.assign({}, this.log) };
+    Storage.save();
+  },
+  clearPersisted(){
+    if(Storage.state.sessionState){ Storage.state.sessionState = null; Storage.save(); }
+  },
+  restore(){
+    const saved = Storage.state.sessionState;
+    if(!saved || saved.active!==true) return;
+    this.active = true;
+    this.phase = (Number.isInteger(saved.phase) && saved.phase>=0 && saved.phase<this.phases.length) ? saved.phase : 0;
+    this.log = {
+      reviewed: Number(saved.log.reviewed)||0,
+      correct: Number(saved.log.correct)||0,
+      newAdded: Number(saved.log.newAdded)||0,
+      errors: Number(saved.log.errors)||0
+    };
+  },
+
+  // Bumps log.newAdded and flushes it durably when a session is live -- shared by the Phase 2
+  // Add-flow patch below and by a paste-import made while a session is active (see
+  // Views.handleParseFill), so both paths keep Storage.state.sessionState's newAdded count in
+  // sync with what renderPhase's Phase 2 screen displays.
+  noteWordsAdded(n){
+    this.log.newAdded += n;
+    if(this.active) this.persist();
+  },
+
   start(){
     this.active = true; this.phase = 0;
     this.log = { reviewed:0, correct:0, newAdded:0, errors:0 };
+    this.persist();
     App.showTab('practice');
     this.renderPhase();
   },
@@ -4544,6 +4967,10 @@ const Session = {
     } else if(this.phase===3){
       const queue = Storage.state.words.filter(w=>{
         const today = Utils.todayISO();
+        // Same gate every other queue builder applies (buildDueQueue, buildProductionQueue):
+        // a word still in teaching can log errors from its teaching steps, but it hasn't
+        // entered retrieval yet, so it must not be pulled into Phase 4's retrieval practice.
+        if(!(w.teaching && w.teaching.completed)) return false;
         // errorCounts[category]>0 is implied by having a matching errorLog entry at all
         // (WordModel.logError increments both together), so checking it separately here was
         // redundant.
@@ -4566,6 +4993,7 @@ const Session = {
 
   finishPhase(results){
     results.forEach(r=>{ this.log.reviewed++; if(r.correct) this.log.correct++; else this.log.errors++; });
+    this.persist();
     if(this.phase===3){ this.finish(); }
     else this.nextPhase();
   },
@@ -4573,6 +5001,7 @@ const Session = {
   nextPhase(){
     this.phase++;
     if(this.phase>=this.phases.length){ this.finish(); return; }
+    this.persist();
     this.renderPhase();
   },
 
@@ -4583,6 +5012,12 @@ const Session = {
     // App.showTab).
     this._unpatch();
     this.active = false;
+    // Storage.state.sessionState carried this Daily Session durably across every phase
+    // boundary (see Session.persist/restore) -- clear it now so a stale active:true doesn't
+    // linger into whatever practice runs next. practiceSession is cleared too in case a
+    // Phase 4 queue was still in progress when "Skip & Finish" was clicked.
+    Session.clearPersisted();
+    Practice.clearPersisted();
     // Phase C/D: NOT bumping DailyActivity from this.log at all here. reviews/correct are
     // already covered per-attempt by Practice.handleGraded during the session (this.log is
     // built from the same `results` that handleGraded pushed to s.results, see finishPhase).
@@ -4641,7 +5076,7 @@ const Teaching = {
 
   start(word){
     const step = (word.teaching && word.teaching.currentStep) || 1;
-    this.state = { word, step, retry:0, inputs:{} };
+    this.state = { word, step, retry:0, inputs:{}, stepLogged: new Set() };
     word.teaching.currentStep = step;
     Storage.save();
     this.render();
@@ -4780,8 +5215,16 @@ const Teaching = {
     if(this.state.step4Data) return this.state.step4Data;
     const word = this.state.word;
     const types = ['mcq','explain'];
-    if(WordModel.getClozeSentence(word)) types.push('cloze');
+    // getClozeSentence mutates word.lastClozeIndex, so a second call can hand back a different
+    // (possibly unblankable, null) candidate than the one that qualified 'cloze' above -- call
+    // it once and reuse the result instead of re-deriving it when 'cloze' is picked.
+    const prevClozeIdx = word.lastClozeIndex;
+    const clozeCandidate = WordModel.getClozeSentence(word);
+    if(clozeCandidate) types.push('cloze');
     const type = Utils.pick(types);
+    // The mutation above only earns its keep when the cloze branch is actually used -- an
+    // mcq/explain draw shouldn't rotate the cloze index just because it was checked.
+    if(type!=='cloze') word.lastClozeIndex = prevClozeIdx;
     const data = { type };
     if(type==='mcq'){
       const others = Storage.state.words.filter(w=>w.id!==word.id && w.production);
@@ -4794,7 +5237,11 @@ const Teaching = {
       if(!incorrectText) incorrectText = 'Yesterday she decided to ' + word.word + ' the ' + (word.form.toLowerCase().includes('noun')?'idea':'meeting') + ' without any reason.';
       data.options = Utils.shuffle([{ text: word.production, correct:true }, { text: incorrectText, correct:false }]);
     } else if(type==='cloze'){
-      data.cloze = WordModel.getClozeSentence(word);
+      data.cloze = clozeCandidate;
+      // Same flush Practice.genCloze does right after the same getClozeSentence call -- only
+      // needed here, not in the mcq/explain branch above, since that branch already restored
+      // prevClozeIdx and left no mutation to lose.
+      Storage.save();
     }
     this.state.step4Data = data;
     return data;
@@ -4842,8 +5289,9 @@ const Teaching = {
         feedbackEl.innerHTML = '<div class="teach-box"><h4>Core Meaning (compare)</h4><div>'+Utils.escapeHtml(word.meaning)+'</div></div>' +
           '<div class="practice-sub">Did your explanation capture this correctly?</div>' +
           '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">Not quite</button></div>';
-        feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['meaningRecall','semanticDiscrimination'], successMsg:'Good — that matches the core meaning.' }));
-        feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.meaning }));
+        const selfYes = feedbackEl.querySelector('#selfYes'), selfNo = feedbackEl.querySelector('#selfNo');
+        selfYes.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(true, { dims:['meaningRecall','semanticDiscrimination'], successMsg:'Good — that matches the core meaning.' }); });
+        selfNo.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(false, { correctAnswerText: word.meaning }); });
       });
     } else {
       const input = document.getElementById('clozeInput');
@@ -4851,6 +5299,7 @@ const Teaching = {
       const submit = ()=>{
         const val = input.value.trim();
         if(!val) return;
+        input.disabled = true; document.getElementById('clozeSubmit').disabled = true;
         const correct = Utils.normalize(val)===Utils.normalize(data.cloze.answer);
         this.handleStepOutcome(correct, { dims:['contextualComprehension','meaningRecognition'], correctAnswerText: data.cloze.answer });
       };
@@ -4890,21 +5339,29 @@ const Teaching = {
   },
   wireStep5(){
     const word = this.state.word;
+    if(!word?.word) return;
     if(word.wordType==='difficultSpelling' && !this.state.spellDone){
       const input = document.getElementById('spellInput');
       this._cacheInput(input, 'step5_spell');
       document.getElementById('spellSubmit').addEventListener('click', ()=>{
+        input.disabled = true; document.getElementById('spellSubmit').disabled = true;
         const val = input.value.trim();
         const correct = Utils.normalize(val)===Utils.normalize(word.word);
         this.state.spellDone = true;
-        DimModel.record(word, 'formRecall', correct);
-        // skipDimRecord: CATEGORY_TO_DIM['Spelling'] is 'formRecall' -- without this, the same
-        // wrong spelling would double-increment formRecall.fail, once here via DimModel.record
-        // above and once via logError's own category-to-dim write. Same shape as the Practice
-        // handleGraded double-count fixed earlier, just unreached by that fix's scope.
-        if(!correct) WordModel.logError(word, 'Spelling', 0, { skipDimRecord: true });
-        WordModel.logAttempt(word, 0, correct, { phase:'teaching', step:5, part:'spelling' });
-        Storage.save();
+        // 'spell' is a distinct stepLogged key from the plain step-5 retrieve key below it in
+        // this same render cycle -- both fire while this.state.step===5, so sharing one key
+        // would let the spelling write's flag silently swallow the retrieve attempt's own log.
+        if(!this.state.stepLogged.has('spell')){
+          DimModel.record(word, 'formRecall', correct);
+          // skipDimRecord: CATEGORY_TO_DIM['Spelling'] is 'formRecall' -- without this, the same
+          // wrong spelling would double-increment formRecall.fail, once here via DimModel.record
+          // above and once via logError's own category-to-dim write. Same shape as the Practice
+          // handleGraded double-count fixed earlier, just unreached by that fix's scope.
+          if(!correct) WordModel.logError(word, 'Spelling', 0, { skipDimRecord: true });
+          WordModel.logAttempt(word, 0, correct, { phase:'teaching', step:5, part:'spelling' });
+          Storage.save();
+          this.state.stepLogged.add('spell');
+        }
         const feedbackEl = document.getElementById('teachFeedback');
         feedbackEl.innerHTML = (correct ? '<div class="feedback correct">✓ Spelled correctly.</div>' : '<div class="feedback incorrect">Correct spelling: <b>'+Utils.escapeHtml(word.word)+'</b></div>') +
           '<div class="btn-row" style="justify-content:center;margin-top:10px;"><button class="btn primary" id="spellContinueBtn">Continue</button></div>';
@@ -4934,8 +5391,18 @@ const Teaching = {
         this.handleStepOutcome(true, { dims:['formRecall','meaningRecall'], successMsg:'Retrieved successfully.', askCategoryOnSuccess: data.hintLevel>0 });
       } else {
         if(data.hintLevel < hints.length) data.hintLevel++;
-        WordModel.logAttempt(word, 0, false, { phase:'teaching', step:5 });
-        Storage.save();
+        // Same dims the success branch above records (dims:['formRecall','meaningRecall']) --
+        // this is the failed half of the same retrieval attempt, so it must count against both
+        // just as reaching them would have. Deliberately checks stepLogged but never sets it:
+        // each wrong try up the hint ladder is a genuinely new failed attempt within this same
+        // visit and must keep counting: only the eventual success (or a stale replay after this
+        // step was already resolved -- see handleStepOutcome) should be gated to log once.
+        if(!this.state.stepLogged.has(this.state.step)){
+          DimModel.record(word, 'formRecall', false);
+          DimModel.record(word, 'meaningRecall', false);
+          WordModel.logAttempt(word, 0, false, { phase:'teaching', step:5 });
+          Storage.save();
+        }
         const ladder = '<div class="hint-ladder">' + hints.slice(0, data.hintLevel).map(h=>'<div class="hint-line">'+Utils.escapeHtml(h)+'</div>').join('') + '</div>';
         const more = data.hintLevel>=hints.length ? '<div class="practice-sub">Now type it once more to lock it in.</div>' : '';
         feedbackEl.innerHTML = '<div class="feedback incorrect">Not yet — here\'s a hint:</div>' + ladder + more;
@@ -4976,8 +5443,9 @@ const Teaching = {
         '<div class="self-check"><div><b>Grammar:</b> '+Utils.escapeHtml(word.grammar||'—')+'</div><div><b>Collocations:</b> '+Utils.escapeHtml(word.collocations.join(', ')||'—')+'</div></div>' +
         '<div class="practice-sub" style="margin-top:10px;">Did it satisfy the constraint and use the word correctly?</div>' +
         '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">No, needs work</button></div>';
-      feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['guidedProduction','grammar','collocation'], successMsg:'Nice — constraint satisfied.' }));
-      feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.production }));
+      const selfYes = feedbackEl.querySelector('#selfYes'), selfNo = feedbackEl.querySelector('#selfNo');
+      selfYes.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(true, { dims:['guidedProduction','grammar','collocation'], successMsg:'Nice — constraint satisfied.' }); });
+      selfNo.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(false, { correctAnswerText: word.production }); });
     });
   },
 
@@ -4998,8 +5466,9 @@ const Teaching = {
       feedbackEl.innerHTML = '<div class="feedback"><b>Your sentence:</b><div style="margin-top:4px;">'+Utils.escapeHtml(val||'(empty)')+'</div></div>' +
         '<div class="practice-sub" style="margin-top:10px;">Original and correct?</div>' +
         '<div class="rating-row"><button class="btn good" id="selfYes">Yes</button><button class="btn bad" id="selfNo">No, needs work</button></div>';
-      feedbackEl.querySelector('#selfYes').addEventListener('click', ()=>this.handleStepOutcome(true, { dims:['independentProduction'], successMsg:'Great — independent production achieved.' }));
-      feedbackEl.querySelector('#selfNo').addEventListener('click', ()=>this.handleStepOutcome(false, { correctAnswerText: word.production }));
+      const selfYes = feedbackEl.querySelector('#selfYes'), selfNo = feedbackEl.querySelector('#selfNo');
+      selfYes.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(true, { dims:['independentProduction'], successMsg:'Great — independent production achieved.' }); });
+      selfNo.addEventListener('click', ()=>{ selfYes.disabled=true; selfNo.disabled=true; this.handleStepOutcome(false, { correctAnswerText: word.production }); });
     });
   },
 
@@ -5019,15 +5488,20 @@ const Teaching = {
     const word = this.state.word;
     const feedbackEl = document.getElementById('teachFeedback');
     if(success){
-      (opts.dims||[]).forEach(d=>DimModel.record(word, d, true));
-      WordModel.logAttempt(word, 0, true, { phase:'teaching', step:this.state.step });
-      Storage.save();
+      if(!this.state.stepLogged.has(this.state.step)){
+        (opts.dims||[]).forEach(d=>DimModel.record(word, d, true));
+        WordModel.logAttempt(word, 0, true, { phase:'teaching', step:this.state.step });
+        Storage.save();
+        this.state.stepLogged.add(this.state.step);
+      }
       if(opts.askCategoryOnSuccess){
         feedbackEl.innerHTML = '<div class="feedback correct">✓ '+(opts.successMsg||'Correct.')+'</div>' +
           '<div class="practice-sub" style="margin-top:10px;">What kind of slip was that, before it clicked?</div>' +
           '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
-        feedbackEl.querySelectorAll('.error-cats button').forEach(btn=>{
+        const slipCatBtns = Array.from(feedbackEl.querySelectorAll('.error-cats button'));
+        slipCatBtns.forEach(btn=>{
           btn.addEventListener('click', ()=>{
+            slipCatBtns.forEach(b=>b.disabled=true);
             // Deliberately no skipDimRecord here, unlike wireStep5/Practice: this step already
             // passed (the dims:true write above already ran), but the user is retroactively
             // naming a real slip they made getting there -- logError's category-to-dim write
@@ -5053,13 +5527,18 @@ const Teaching = {
         (opts.correctAnswerText ? '<div class="correct-answer">Correct: '+Utils.escapeHtml(opts.correctAnswerText)+'</div>' : '') + '</div>' +
         '<div class="practice-sub" style="margin-top:10px;">What kind of error was this?</div>' +
         '<div class="error-cats">' + ERROR_CATEGORIES.map(c=>'<button data-c="'+c+'">'+c+'</button>').join('') + '</div>';
-      feedbackEl.querySelectorAll('.error-cats button').forEach(btn=>{
+      const failCatBtns = Array.from(feedbackEl.querySelectorAll('.error-cats button'));
+      failCatBtns.forEach(btn=>{
         btn.addEventListener('click', ()=>{
+          failCatBtns.forEach(b=>b.disabled=true);
           const cat = btn.dataset.c;
-          WordModel.logError(word, cat, 0);
-          WordModel.logAttempt(word, 0, false, { phase:'teaching', step:this.state.step, errorCategory:cat });
-          word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: cat });
-          Storage.save();
+          if(!this.state.stepLogged.has(this.state.step)){
+            WordModel.logError(word, cat, 0);
+            WordModel.logAttempt(word, 0, false, { phase:'teaching', step:this.state.step, errorCategory:cat });
+            word.teaching.errorHistory.push({ ts: Date.now(), step: this.state.step, category: cat });
+            Storage.save();
+            this.state.stepLogged.add(this.state.step);
+          }
           const secondFailure = this.state.retry>=2;
           feedbackEl.innerHTML = '<div class="diag-box"><b>'+cat+' error.</b><div class="expl">'+ERROR_EXPLANATIONS[cat]+'</div></div>' +
             (secondFailure ?
@@ -5069,7 +5548,7 @@ const Teaching = {
           const adv = feedbackEl.querySelector('#advanceBtn');
           if(adv) adv.addEventListener('click', ()=>this.goStep(this.state.step+1));
           const rt = feedbackEl.querySelector('#retryBtn');
-          if(rt) rt.addEventListener('click', ()=>{ this.state.step4Data=null; this.state.step6Data=null; this.render(); });
+          if(rt) rt.addEventListener('click', ()=>{ this.state.step4Data=null; this.state.step6Data=null; this.state.stepLogged.delete(this.state.step); this.render(); });
         });
       });
     }
