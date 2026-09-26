@@ -40,3 +40,39 @@ Rules for AI agents (and humans) working in this repo.
   script (`vocab-trainer 2.0.html:664`) — there is no server/backend.
 - After any change that moves, renames, or adds a function/file, update
   `CONTEXT.md` in the same commit.
+
+## Process rules (session-established)
+
+- **In-flight P2/P3 fixes**: notice one while working on something else?
+  Log it in `KNOWN_ISSUES.md` in the commit you're already making — do not
+  fix it there. Only fix it immediately, as a clean second commit, if it's
+  1-3 lines and touches a line you were already editing this task (message:
+  `fix: <bug> (found in-flight during <original task>)`), removing the
+  `KNOWN_ISSUES.md` entry in that same fix commit. Otherwise it waits for
+  its section's scan — never bundle an in-flight fix into an unrelated
+  commit. Rationale: keeps "fix I was there for" and "fix I noticed"
+  separately revertable.
+- **Test suite cadence**: run `node --test tests/*.test.js` before every
+  commit, no exceptions — except docs-only commits (`KNOWN_ISSUES.md`,
+  `AGENTS.md`, `README.md`), which don't require a run. Suspect a failure
+  is pre-existing? Prove it: stash, run on the clean tree, confirm, unstash,
+  note "pre-existing" in the commit message. Rationale: a full run takes
+  seconds; "I only touched X" is how regressions ship.
+- **Manual browser verification**: never test in the primary browser
+  profile — use a dedicated profile (e.g. "vocab-test") or incognito.
+  Before any manual test touching Storage (import/export/erase/backfill),
+  export a real backup from the primary profile first. Also check Safari
+  before calling something fixed — different Date parsing,
+  `speechSynthesis` voices, and `localStorage` quota behavior. `file://` is
+  fine for logic testing; serve over `http://localhost` (`npx serve .`) if
+  the test needs a secure context (clipboard, some speech APIs). Rationale:
+  real `localStorage` is real data, and most "works on my machine" reports
+  are Chrome-only.
+- **Real backup files**: `vocab-trainer-backup-*.json` files are real user
+  data — read-only, off-limits on your own initiative. Need a fixture?
+  Generate a synthetic one with representative shape; never copy from a
+  real backup. Explicitly pointed at a real backup? Read-only: no copies
+  into fixtures, no commits referencing its contents. Never round-trip a
+  real backup through an import→export debugging script without asking.
+  Rationale: these files can hold personal vocabulary, real exam dates,
+  and full history.
