@@ -56,5 +56,3 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   wrapper can silently break this.
 - `node --test tests/` (no glob) finds nothing — use
   `node --test tests/*.test.js`.
-- One persistence test ("resetDim preserves everAchievedAt") currently
-  fails — unclear — verify if known-broken or a real regression.

@@ -1653,6 +1653,16 @@ const Practice = {
 
   genRecognition(word){
     const others = Storage.state.words.filter(w=>w.id!==word.id && w.meaning);
+    if(others.length===0){
+      // No other word in the bank has a meaning to draw a distractor from -- an MCQ with a
+      // single option is unanswerable-wrong (the only click is always "correct"), silently
+      // trivializing this dimension and poisoning its FSRS/legacy grading with a fake 100%
+      // signal. Self-graded recall (mirrors genCloze's own no-usable-sentence fallback below)
+      // keeps type:'recognition' -- and therefore recordDimForQuestion's meaningRecognition
+      // credit -- intact, just without a real MCQ to offer.
+      return { type:'recognition', word, level:1, promptTitle:'Warm-up: recall the meaning',
+        prompt: word.word, autoGrade:false };
+    }
     const distractors = Utils.shuffle(others).slice(0,3).map(w=>w.meaning);
     const options = Utils.shuffle([word.meaning, ...distractors]);
     return { type:'recognition', word, level:1, promptTitle:'Warm-up: choose the meaning', prompt: word.word,
@@ -2882,7 +2892,10 @@ const Views = {
       '</div></div>';
 
     const answerArea = el.querySelector('#answerArea');
-    if(q.type==='recognition'){
+    // q.autoGrade also gates this -- genRecognition's no-distractor fallback keeps
+    // type:'recognition' (so dimension credit is unchanged) but has no q.options to build an
+    // MCQ from; it falls through to the self-graded textarea branch below instead.
+    if(q.type==='recognition' && q.autoGrade){
       answerArea.innerHTML = '<div class="mcq-options">' + q.options.map((o,i)=>'<button data-i="'+i+'">'+Utils.escapeHtml(o)+'</button>').join('') + '</div>';
       answerArea.querySelectorAll('button').forEach(btn=>{
         btn.addEventListener('click', ()=>{

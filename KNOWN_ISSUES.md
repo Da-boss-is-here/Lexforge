@@ -72,7 +72,20 @@ importJSON, load/save)
       so leaving it as dead weight is also a valid option.
 
 ## Practice
-_(scanned 2026-09-12, no findings)_
+_(scanned 2026-09-12, no findings; genRecognition fix 2026-09-28)_
+
+- [x] **P1** — `Practice.genRecognition` could produce an unanswerable
+      1-2 option MCQ when the bank has fewer than ~4 words with a meaning.
+      Found: 2026-09-28 (Algorithm/Debugging Part 0 triage). Location:
+      `Practice.genRecognition` (vocab-trainer 2.0.html).
+      Fixed: falls back to a self-graded recall prompt (`autoGrade:false`,
+      no `options`) when zero distractor words exist, instead of returning
+      a single-option MCQ that always grades "correct" regardless of
+      recall. Stays `type:'recognition'` so `recordDimForQuestion`'s
+      meaningRecognition credit is unaffected. `Views.renderPracticeCard`
+      gates its MCQ branch on `q.autoGrade` too, so it falls through to
+      the existing self-check textarea UI. Regression tests added to
+      `tests/persistence.smoke.test.js`.
 
 - [ ] **P3** — `Practice.session` shape comment references a nonexistent
       `phase` field.

@@ -2379,3 +2379,47 @@ test('Practice.buildProductionQueue excludes a word with a level-4 history entry
   assert.ok(!queue.some(item => item.word.id === word.id),
     'a word already graded at level 4 today must not be re-offered by buildProductionQueue');
 });
+
+test('Practice.genRecognition falls back instead of returning an unanswerable single-option MCQ when the bank has no distractor', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  // Exactly one word with a meaning in the whole bank -- genRecognition has nothing else
+  // to draw a distractor from. Before the fix this returned {type:'recognition',
+  // options:[word.meaning]} -- a single-button MCQ where the only click is always
+  // "correct", regardless of whether the learner actually recalled anything.
+  const word = E.WordModel.create({
+    word: 'solitary', meaning: 'the only one of its kind', form: '', grammar: '',
+    collocations: ['a', 'b'], contrast: 'c', contexts: ['x', 'y'], production: 'p',
+    cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  E.Storage.state.words.push(word);
+
+  const q = E.Practice.genRecognition(word);
+  assert.equal(q.type, 'recognition', 'must stay type:recognition so recordDimForQuestion still credits meaningRecognition');
+  assert.equal(q.autoGrade, false, 'with no distractor available, this must fall back to a self-graded recall prompt, not an MCQ');
+  assert.equal(q.options, undefined, 'no options array -- Views.renderPracticeCard must not attempt to build an MCQ from this');
+});
+
+test('Practice.genRecognition still returns a real MCQ once at least one distractor word exists', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  const word = E.WordModel.create({
+    word: 'solitary', meaning: 'the only one of its kind', form: '', grammar: '',
+    collocations: ['a', 'b'], contrast: 'c', contexts: ['x', 'y'], production: 'p',
+    cloze: [], wordType: 'general'
+  });
+  const other = E.WordModel.create({
+    word: 'gregarious', meaning: 'fond of company', form: '', grammar: '',
+    collocations: ['a', 'b'], contrast: 'c', contexts: ['x', 'y'], production: 'p',
+    cloze: [], wordType: 'general'
+  });
+  word.teaching.completed = true;
+  E.Storage.state.words.push(word, other);
+
+  const q = E.Practice.genRecognition(word);
+  assert.equal(q.type, 'recognition');
+  assert.equal(q.options.length, 2);
+  assert.ok(q.options.includes(word.meaning));
+  assert.ok(q.options.includes(other.meaning));
+});
