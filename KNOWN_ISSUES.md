@@ -51,6 +51,40 @@ importJSON, load/save)
       and store `correct: !!correct`.
 
 ## WordModel + DimModel
+- [x] **P2** — `WordModel.maskWord` over-masked via stem matching: the stem
+      length was `min(6, word.length)`, which equals the whole word for any
+      target ≤6 chars, so the wildcard-suffix regex matched any unrelated
+      word sharing that prefix (e.g. target "act" masked "actor",
+      "actually", "action", "acting" in hints/mnemonics/contexts that never
+      contained "act" at all).
+      Found: 2026-09-28 (Algorithm/Debugging Part 0 triage). Location:
+      `WordModel.maskWord` (vocab-trainer 2.0.html).
+      Fixed: the stem-plus-wildcard branch now only runs when the
+      component is actually truncated (`p.length>6`); a ≤6-char word is
+      already covered by the exact-match replace earlier in the function.
+      Trade-off: a short target's own inflected endings (e.g. "act" ->
+      "acted"/"acting") are no longer masked by the fallback -- accepted,
+      since there's no way to distinguish a real inflection from an
+      unrelated word sharing a short prefix without a real
+      stemmer/lemmatizer, and under-masking (word peeks through unblanked)
+      is far less harmful than masking unrelated text. Regression tests
+      added to `tests/persistence.smoke.test.js`.
+
+- [ ] **P3** — `updateLadder`'s level-drop rule reads `word.history`
+      filtered to non-teaching entries but NOT scoped to the level the
+      word is currently being tested at, while its level-promotion rule
+      IS scoped (`h.level===level`). A word could be demoted off failures
+      logged during unrelated category-drill practice at a different
+      level. Confirmed real during Algorithm/Debugging Part 0 triage but
+      deliberately deferred -- changing it shifts existing-user behavior
+      and needs a decided policy reason, not an emergent fix.
+      Found: 2026-09-28. Location: `WordModel.updateLadder`
+      (vocab-trainer 2.0.html:1295-1307).
+      Notes: fix candidate is to filter `last5` on `h.level===level` the
+      same way the promotion branch does, symmetric with how
+      `computeMastery`/`buildDueQueue`'s `failedRecent` already filter
+      teaching-phase entries out but not by level.
+
 - [ ] **P3** — `logError`'s `opts` parameter is duck-typed; a truthy
       non-opts 4th arg silently proceeds to the dim write.
       Found: 2026-09-12. Location: `WordModel.logError`

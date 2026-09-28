@@ -2423,3 +2423,29 @@ test('Practice.genRecognition still returns a real MCQ once at least one distrac
   assert.ok(q.options.includes(word.meaning));
   assert.ok(q.options.includes(other.meaning));
 });
+
+test('WordModel.maskWord does not mask unrelated words sharing a short target word as a prefix', () => {
+  const { exports: E } = buildSandbox();
+  // "act" (3 chars) is short enough that the old stem = word.slice(0, min(6,len)) === the
+  // whole word, so the wildcard-suffix regex ('\bact[a-z\']*') matched any word starting with
+  // "act" -- none of these are actually inflections of "act".
+  const text = 'The actor delivered his lines, but the play was actually about the actions of an activist.';
+  const masked = E.WordModel.maskWord(text, 'act');
+  assert.ok(!masked.includes('_____'), 'no real occurrence of "act" is present -- nothing should be masked');
+  assert.equal(masked, text);
+});
+
+test('WordModel.maskWord still catches a genuine inflected ending on a longer target word', () => {
+  const { exports: E } = buildSandbox();
+  // "compromise" (10 chars) truncates to a 6-char stem ("compro"), which is the case this
+  // fallback exists for -- must keep working after the short-word fix above.
+  const masked = E.WordModel.maskWord('She felt compromised by the decision.', 'compromise');
+  assert.ok(masked.includes('_____'), 'an inflected form of a long target word should still be masked');
+  assert.ok(!masked.includes('compromised'), 'the inflected word itself must not leak through unmasked');
+});
+
+test('WordModel.maskWord still masks an exact occurrence of a short target word', () => {
+  const { exports: E } = buildSandbox();
+  const masked = E.WordModel.maskWord('She had to act quickly.', 'act');
+  assert.equal(masked, 'She had to _____ quickly.');
+});

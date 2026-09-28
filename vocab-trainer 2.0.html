@@ -1185,8 +1185,15 @@ const WordModel = {
     if(!text || !word) return text;
     let masked = text.replace(new RegExp('\\b'+Utils.escapeRegex(word)+'\\b','ig'), '_____');
     const stopwords = new Set(['a','an','the','of','to','in','on','for','and','or','is','was','be','been','its',"it's",'his','her','their']);
-    word.split(/\s+/).filter(p=>p.length>=3 && !stopwords.has(p.toLowerCase())).forEach(p=>{
-      const stem = Utils.escapeRegex(p.slice(0, Math.min(6, p.length)));
+    // Only stem-match a component that's actually been truncated (p.length>6, so the stem
+    // below is strictly shorter than the word). For a component of 6 chars or fewer, the stem
+    // would equal the whole untruncated word, and appending a wildcard suffix to it is an
+    // unbounded prefix search, not an inflection match -- e.g. word="act" used to mask
+    // "actor"/"actually"/"action" in unrelated text. Words that short are already covered by
+    // the exact-match replace above; this loop exists only to catch genuine inflected endings
+    // on longer words (e.g. "compromise" -> "compromised").
+    word.split(/\s+/).filter(p=>p.length>6 && !stopwords.has(p.toLowerCase())).forEach(p=>{
+      const stem = Utils.escapeRegex(p.slice(0, 6));
       masked = masked.replace(new RegExp('\\b'+stem+"[a-z']*",'ig'), '_____');
     });
     return masked;
