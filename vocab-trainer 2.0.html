@@ -873,7 +873,8 @@ function repairWord(w){
     firstMasteryAt: typeof w.firstMasteryAt==='number' ? w.firstMasteryAt : null,
     // Gated the same way as firstMasteryAt above -- accepted only when shaped right, else null
     // (an old pre-fix save simply never had this field, which is the expected migration path).
-    firstRetrieval: (w.firstRetrieval && typeof w.firstRetrieval==='object' && typeof w.firstRetrieval.date==='string') ? w.firstRetrieval : null,
+    firstRetrieval: (w.firstRetrieval && typeof w.firstRetrieval==='object' && isValidDateStr(w.firstRetrieval.date) && typeof w.firstRetrieval.ts==='number')
+      ? { date: w.firstRetrieval.date, correct: !!w.firstRetrieval.correct, ts: w.firstRetrieval.ts } : null,
     dims: repairDims(w.dims),
     fsrs: FSRSScheduler.repairWordFsrs(w.fsrs),
     teaching: (w.teaching && typeof w.teaching==='object') ? {

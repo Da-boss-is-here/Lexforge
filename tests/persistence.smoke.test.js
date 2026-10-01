@@ -1327,6 +1327,57 @@ test('logAttempt gates firstRetrieval on the resolved phase, so an attemptsPhase
   assert.ok(w.firstRetrieval, 'a non-teaching attempt still sets firstRetrieval');
 });
 
+test('validateAndRepair nulls out a firstRetrieval with a malformed date, instead of letting it skew computeFirstPostTeachingRetention', () => {
+  const { exports: E } = buildSandbox();
+  const rawWord = rawWordWithHistory('2026-01-05');
+  rawWord.firstRetrieval = { date: 'not-a-date', correct: 'yes', ts: 0 };
+  const repaired = E.validateAndRepair({
+    version: 2, words: [rawWord], errorLog: [], settings: {},
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.words[0].firstRetrieval, null,
+    'a malformed-date firstRetrieval must be nulled out, not passed through');
+});
+
+test('validateAndRepair nulls out a firstRetrieval with a valid date but a non-numeric ts', () => {
+  const { exports: E } = buildSandbox();
+  const rawWord = rawWordWithHistory('2026-01-05');
+  rawWord.firstRetrieval = { date: '2026-09-01', correct: true, ts: 'not-a-timestamp' };
+  const repaired = E.validateAndRepair({
+    version: 2, words: [rawWord], errorLog: [], settings: {},
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  assert.equal(repaired.words[0].firstRetrieval, null,
+    'a non-numeric ts must be nulled out even when the date is well-formed');
+});
+
+test('validateAndRepair keeps a well-formed firstRetrieval but coerces correct to a strict boolean', () => {
+  const { exports: E } = buildSandbox();
+  const rawWord = rawWordWithHistory('2026-01-05');
+  rawWord.firstRetrieval = { date: '2026-09-01', correct: 'truthy-but-not-boolean', ts: 1725148800000 };
+  const repaired = E.validateAndRepair({
+    version: 2, words: [rawWord], errorLog: [], settings: {},
+    sessionLog: [], writingLog: [], examLog: [], practiceSession: null
+  });
+  const fr = repaired.words[0].firstRetrieval;
+  assert.ok(fr, 'a well-formed firstRetrieval should survive repair');
+  assert.equal(fr.date, '2026-09-01');
+  assert.equal(fr.ts, 1725148800000);
+  assert.equal(fr.correct, true, 'correct must be coerced to a strict boolean');
+  assert.equal(typeof fr.correct, 'boolean');
+});
+
+test('computeFirstPostTeachingRetention still counts a repaired, well-formed firstRetrieval correctly', () => {
+  const { exports: E } = buildSandbox();
+  const w = makeWord(E, 'mike');
+  w.teaching.completed = true;
+  w.firstRetrieval = { date: '2026-09-01', correct: true, ts: 1725148800000 };
+  const result = E.computeFirstPostTeachingRetention([w]);
+  assert.equal(result.n, 1);
+  assert.equal(result.y, 1);
+  assert.equal(result.rate, 1);
+});
+
 test('repairDims clamps successAtReset to success, so a corrupted save cannot strand a dim below the Achieved threshold', () => {
   const { exports: E } = buildSandbox();
   // successAtReset > success is not producible by resetDim (it snapshots the current success),
@@ -2204,11 +2255,10 @@ test('a valid word.history date survives repair and reaches diffDays finite via 
   assert.ok(Number.isFinite(streak.current) && Number.isFinite(streak.longest));
 });
 
-test('word.srs.lastPracticed, word.firstRetrieval, attempts[].date, and *Log[].date are inert -- a malformed value passes through repair without crashing anything, because none of them are ever read in a date-arithmetic context', () => {
+test('word.srs.lastPracticed, attempts[].date, and *Log[].date are inert -- a malformed value passes through repair without crashing anything, because none of them are ever read in a date-arithmetic context', () => {
   const { exports: E } = buildSandbox();
   const rawWord = rawWordWithHistory('2026-01-05');
   rawWord.srs.lastPracticed = 'not-a-date';
-  rawWord.firstRetrieval = { date: 'not-a-date', correct: true, ts: 1 };
 
   let repaired;
   assert.doesNotThrow(() => {
@@ -2221,10 +2271,9 @@ test('word.srs.lastPracticed, word.firstRetrieval, attempts[].date, and *Log[].d
       practiceSession: null
     });
   });
-  // Not sanitized -- these fields are never read in arithmetic anywhere in the app, so
-  // validating them would have no observable effect (see bug #7's investigation notes).
+  // Not sanitized -- this field is never read in arithmetic anywhere in the app, so
+  // validating it would have no observable effect (see bug #7's investigation notes).
   assert.equal(repaired.words[0].srs.lastPracticed, 'not-a-date');
-  assert.equal(repaired.words[0].firstRetrieval.date, 'not-a-date');
   assert.equal(repaired.sessionLog.length, 1);
   assert.equal(repaired.writingLog.length, 1);
   assert.equal(repaired.examLog.length, 1);
