@@ -7,7 +7,7 @@ A single-file vocabulary trainer that refuses to call a word mastered until you 
 ![no dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
 
-**Live demo:** <PAGES_URL>
+**Live demo:** https://da-boss-is-here.github.io/Lexforge/
 
 ## Screenshots
 
@@ -59,7 +59,7 @@ The screenshots use a synthetic data set generated for this README, not real stu
 
 ## Try it
 
-- Live demo: <PAGES_URL>
+- Live demo: https://da-boss-is-here.github.io/Lexforge/
 - Run locally: open `index.html` in a browser. No server, no build, no install.
 
 ## Tests
