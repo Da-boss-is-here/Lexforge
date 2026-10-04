@@ -42,6 +42,8 @@ Every word needs a full record, not just a definition: core meaning, form (part 
 
 ![Manual entry form, filled in with an example word](screenshots/views/add-word-manual.png)
 
+![The lower half of the manual entry form: contexts, production sentence, mnemonic, cloze sentences, and the Save Word button](screenshots/views/add-word-manual-2.png)
+
 **Paste import.** Paste one line per word in a pipe-delimited format. A single line is parsed and loaded into the manual form so you can check it before saving. Several lines are imported in one go: valid lines are added and any line that fails is reported with its line number and reason.
 
 **AI generator prompt.** The Paste Import tab has a "Copy generator prompt for AI" button. It copies a prompt you can give to an AI assistant, which returns lines in the exact format the importer expects. The app itself makes no AI calls; you paste the result back in.
@@ -216,9 +218,39 @@ When time is up, the writing is locked and a review checklist appears. For each 
 
 The Analytics tab reads from the review log, the daily activity record, and the words themselves. Every chart can be read against a sample of reviews, not a single result: the calibration and retention charts stay hidden until there are at least 20 usable reviews, and the stability chart needs 5 or more reviews in a dimension.
 
-![Full Analytics tab](screenshots/analytics.png)
+> The full Analytics page as a single image: [analytics.png](screenshots/analytics.png) (opens on GitHub; scroll to view the entire page).
 
-From the top:
+The sections below are the same page in seven parts, from the top down.
+
+![This Week: reviews, accuracy and new words against the previous week, with current and best streaks](screenshots/analytics/analytics-01-this-week.png)
+
+**This Week** compares the last seven days with the seven before, and shows the current and best streaks.
+
+![Study streak summary tiles and the Achievements row, with locked achievements showing progress bars](screenshots/analytics/analytics-02-achievements.png)
+
+**Achievements** shows the streak, practice totals and retrieval accuracy, then each goal as unlocked or as a progress bar toward the target.
+
+![Milestones list of words reaching Stable or Exam Ready, and the Personal Bests card](screenshots/analytics/analytics-03-milestones.png)
+
+**Milestones** lists the first word and each word's first time reaching Stable or Exam Ready, followed by **Personal Bests** (longest streak, most reviews in a day, fastest word to mastery).
+
+![Arm Comparison, FSRS-6 versus the legacy scheduler](screenshots/analytics/analytics-04-arm-comparison.png)
+
+**Arm Comparison** puts the two scheduling methods side by side (mean attempts to first mastery, and mean interval at the last grade), with a note that the comparison is descriptive and not a causal result.
+
+![Words Added vs. Learned, Current Mastery Distribution, Upcoming Review Load, and the Dimension Coverage table](screenshots/analytics/analytics-05-charts.png)
+
+The main charts show **words added versus words learned** over time, the **current mastery distribution**, the **upcoming review load**, and the **Dimension Coverage** table with a Practice button per dimension.
+
+![Learning Health: Prediction Calibration, Stability Growth by Dimension, and Retention by Interval, with the Consistency heatmap beside them](screenshots/analytics/analytics-06-learning-health.png)
+
+**Learning Health** checks the scheduler against your own reviews: **Prediction Calibration** compares predicted and actual recall, **Stability Growth** shows how review spacing grows per dimension, and **Retention by Interval** shows success rate against days since the last review.
+
+![Consistency heatmap, Retention Gaps, and First-Post-Teaching Retention](screenshots/analytics/analytics-07-consistency-retention.png)
+
+The **Consistency** heatmap shows reviews per day over the last 84 days, **Retention Gaps** lists dimensions that were Achieved and later slipped back, and **First-Post-Teaching Retention** gives the share of taught words recalled on the first attempt.
+
+In more detail, from the top:
 
 - **This Week.** Reviews, accuracy, and new words for the last seven days, compared with the seven days before. The current streak and personal best streak are below.
 - **Achievements.** Progress toward a small set of goals, such as teaching 10 words or getting one word to Exam Ready.
