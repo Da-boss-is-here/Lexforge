@@ -20,7 +20,7 @@ The glob is required. `node --test tests/` alone finds nothing. There is no `pac
 
 ## Rules
 
-- Don't hand-edit `lib/fsrs.umd.js` or `lib/fsrs.LICENSE`. They are vendored.
+- Don't hand-edit `lib/fsrs.umd.js`, `lib/chart.umd.js`, or their LICENSE files (`lib/fsrs.LICENSE`, `lib/chart.LICENSE`). They are vendored.
 - After a change that moves, renames, or adds a function or file, update `CONTEXT.md` in the same commit.
 - Run the tests before committing. Docs-only commits don't need a run.
 - `vocab-trainer-backup-*.json` files are personal data exports and are gitignored. Never commit one, and don't use a real backup as a test fixture.

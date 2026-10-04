@@ -11,6 +11,9 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   word+dimension), UMD export `:17`. `lib/due-queue.js` — builds/merges
   due-item queues per dimension, UMD export `:17`.
 - `lib/fsrs.umd.js` — vendored ts-fsrs library. Don't edit.
+- `lib/chart.umd.js` — vendored Chart.js 4.5.1 (UMD, global `Chart`), loaded in
+  `<head>` at `index.html:7`. Don't edit. Licenses: `lib/fsrs.LICENSE`,
+  `lib/chart.LICENSE`.
 - `tests/due-queue.test.js`, `tests/fsrs-scheduler.test.js` — unit tests
   against `lib/`.
 - `tests/persistence.smoke.test.js` — extracts and runs the real app

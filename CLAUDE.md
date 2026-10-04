@@ -27,8 +27,9 @@ no build step — all state lives in `localStorage`.
 - **`lib/fsrs-scheduler.js`** and **`lib/due-queue.js`** are dual-use
   modules: loaded as a `<script>` global by the app AND `require`d directly
   by tests, via a UMD wrapper. Keep that wrapper pattern intact when editing
-  either file. `lib/fsrs.umd.js` is a vendored third-party dependency —
-  never hand-edit it or `lib/fsrs.LICENSE`.
+  either file. `lib/fsrs.umd.js` (ts-fsrs) and `lib/chart.umd.js`
+  (Chart.js 4.5.1, loaded in `<head>`) are vendored third-party dependencies —
+  never hand-edit them or `lib/fsrs.LICENSE` / `lib/chart.LICENSE`.
 - **`tests/persistence.smoke.test.js`** doesn't test a copy — it extracts
   the real script out of `index.html` via `node:vm`
   (`extractAppScript()`) by regex-stripping the IIFE wrapper and the
@@ -66,7 +67,7 @@ no build step — all state lives in `localStorage`.
 
 - `index.html` is the single source of truth for the app — do
   not fork or duplicate it.
-- `lib/*.js` (except `fsrs.umd.js`) must keep working both as a `<script>`
+- `lib/*.js` (except the vendored `fsrs.umd.js` and `chart.umd.js`) must keep working both as a `<script>`
   global and as a CommonJS `require`.
 - `vocab-trainer-backup-*.json` files are gitignored user data exports —
   never treat them as source, never commit new ones.

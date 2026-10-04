@@ -9,6 +9,9 @@ Rules for AI agents (and humans) working in this repo.
   file directly in a browser to run it.
 - `lib/fsrs.umd.js` — vendored third-party FSRS library (do not hand-edit;
   see `lib/fsrs.LICENSE`).
+- `lib/chart.umd.js` — vendored Chart.js 4.5.1 UMD build (do not hand-edit;
+  license in `lib/chart.LICENSE`). Loaded by `<script src="lib/chart.umd.js">`
+  in the HTML `<head>`.
 - `lib/fsrs-scheduler.js` — thin wrapper around `fsrs.umd.js`, used by both
   the app (via `<script src="lib/fsrs-scheduler.js">`) and by tests (via
   `require`).
@@ -33,9 +36,10 @@ Rules for AI agents (and humans) working in this repo.
 - `index.html` is the single source of truth for the app. There
   is no other copy — a prior `vocab-trainer.html` was deleted; don't
   recreate it.
-- `lib/*.js` (except `fsrs.umd.js`) must stay usable both as a `<script>`
+- `lib/*.js` (except the vendored `fsrs.umd.js` and `chart.umd.js`) must stay usable both as a `<script>`
   global and as a CommonJS `require` — keep the UMD wrapper pattern intact.
-- Don't hand-edit `lib/fsrs.umd.js` or `lib/fsrs.LICENSE`.
+- Don't hand-edit `lib/fsrs.umd.js`, `lib/fsrs.LICENSE`, `lib/chart.umd.js`, or
+  `lib/chart.LICENSE`.
 - All user data lives in `localStorage` under `STORAGE_KEY` inside the app
   script (`index.html:664`) — there is no server/backend.
 - After any change that moves, renames, or adds a function/file, update

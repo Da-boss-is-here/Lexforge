@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Core Vocabulary Trainer</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="lib/chart.umd.js"></script>
 <style>
 /* ==============================================================================
    Design system. System font stack only — no webfonts, no network dependency
@@ -419,8 +419,8 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:14px 0;}
 <div id="toastRoot"></div>
 
 <!-- Vendored locally (not CDN) so the app keeps working with no network access.
-     lib/fsrs.umd.js is ts-fsrs, implementing FSRS-6 (see lib/fsrs-scheduler.js
-     for why not FSRS-7). lib/fsrs-scheduler.js and lib/due-queue.js are also
+     lib/chart.umd.js is Chart.js 4.5.1 (loaded in <head>). lib/fsrs.umd.js is ts-fsrs,
+     FSRS-6 (see lib/fsrs-scheduler.js for why not FSRS-7). lib/fsrs-scheduler.js and lib/due-queue.js are also
      plain classic scripts sharing this page's global scope, same as every
      other module below (WordModel, DimModel, etc.) -- no bundler, no ES
      modules, so this keeps working when the file is opened directly. -->

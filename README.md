@@ -55,7 +55,7 @@ The screenshots use a synthetic data set generated for this README, not real stu
 **Privacy**
 - All data lives in your browser's `localStorage`. There is no server and no account.
 - Export and import (merge or replace) as a JSON file from Settings.
-- Analytics charts currently load Chart.js from a CDN. No study data is sent anywhere; without a network connection the charts are replaced by a notice and everything else keeps working.
+- Everything the app needs, including Chart.js and the FSRS library, is vendored in `lib/`. The app makes no network requests.
 
 ## Try it
 
@@ -73,7 +73,7 @@ Requires Node.js. The glob is needed; `node --test tests/` alone finds nothing.
 ## Project layout
 
 - `index.html` — the whole app: markup, styles, and one inline script.
-- `lib/` — FSRS scheduling and due-queue modules, shared by the app and the tests, plus the vendored `ts-fsrs` build.
+- `lib/` — FSRS scheduling and due-queue modules, shared by the app and the tests, plus the vendored `ts-fsrs` and Chart.js builds.
 - `tests/` — unit and smoke tests. The persistence smoke test loads the real script out of `index.html`.
 - `docs/` — README screenshots.
 
