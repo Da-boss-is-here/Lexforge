@@ -83,7 +83,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to work on it, and [CONTEXT.md](CONTEXT.m
 
 MIT. See [LICENSE](LICENSE).
 
-This project vendors ts-fsrs and Chart.js under their own licenses — see `lib/fsrs.LICENSE` and `lib/chart.LICENSE`.
+The root MIT license covers the original code in this repository. The vendored ts-fsrs and Chart.js builds in `lib/` carry their own licenses — see `lib/fsrs.LICENSE`, `lib/chart.LICENSE`, and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
 
 ## Acknowledgments
 

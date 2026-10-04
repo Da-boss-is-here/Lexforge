@@ -22,6 +22,7 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 
 - `docs/screenshots/` — README images (synthetic data, not real study data).
 - `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` — public-facing docs.
+- `THIRD_PARTY_NOTICES.md` — attribution for vendored ts-fsrs, Chart.js and inlined @kurkle/color (versions, SHA-256, license text).
 
 ## Key sections in `index.html` (top-level objects, file order)
 
