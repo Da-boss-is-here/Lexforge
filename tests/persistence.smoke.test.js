@@ -1,5 +1,5 @@
 /* Persistence smoke test: exercises the REAL app script (extracted straight out of
-   vocab-trainer 2.0.html, not a duplicate) via node:vm. Storage/WordModel/etc. don't
+   index.html, not a duplicate) via node:vm. Storage/WordModel/etc. don't
    touch the DOM, so this can run headless with a minimal localStorage + document stub
    -- no browser needed. Covers: state round-trips through save/load, and a pre-existing
    (pre-FSRS) save migrates correctly on load. */
@@ -11,7 +11,7 @@ const vm = require('node:vm');
 const DueQueue = require('../lib/due-queue.js');
 const FSRSScheduler = require('../lib/fsrs-scheduler.js');
 
-const HTML_PATH = path.join(__dirname, '..', 'vocab-trainer 2.0.html');
+const HTML_PATH = path.join(__dirname, '..', 'index.html');
 
 class FakeLocalStorage {
   constructor() { this._data = new Map(); }

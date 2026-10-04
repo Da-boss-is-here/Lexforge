@@ -1,2 +1,5 @@
 vocab-trainer-backup-*.json
 .DS_Store
+node_modules/
+*.log
+.env

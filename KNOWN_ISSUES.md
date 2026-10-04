@@ -16,12 +16,12 @@ importJSON, load/save)
       numeric `ts`, unlike every sibling log filter; `NaN` comparisons
       then break `Views.renderErrors`' sort.
       Found: 2026-09-12. Location: `validateAndRepair`
-      (vocab-trainer 2.0.html:722).
+      (index.html:722).
       Notes: `sessionLog`/`writingLog`/`examLog`/`fsrsReviewLog`/`attempts`
       all filter on `s.ts`; `errorLog` is the outlier and only checks
       `category` + `date`. Fix: add `typeof e.ts === 'number'`.
       Fixed: 2026-10-01 (verified during P0 reconciliation pass) —
-      already present in code at vocab-trainer 2.0.html:740
+      already present in code at index.html:740
       (`typeof e.ts==='number' && !Number.isNaN(e.ts)`).
 
 - [x] **P2** — Merge import doesn't union `dailyActivityBackfilledAt`, so
@@ -35,7 +35,7 @@ importJSON, load/save)
       `this.state.dailyActivityBackfilledAt || incoming.dailyActivityBackfilledAt || Date.now()`
       after merging `dailyActivity`.
       Fixed: 2026-10-01 (verified during P0 reconciliation pass) —
-      already present in code at vocab-trainer 2.0.html:1059.
+      already present in code at index.html:1059.
 
 - [x] **P2** — Merge import builds `existingIds` once and never adds ids
       of newly-merged words, so a backup containing two entries with the
@@ -46,14 +46,14 @@ importJSON, load/save)
       returns the first match, so behavior is inconsistent. Fix: add
       `existingIds.add(w.id)` after each push.
       Fixed: 2026-10-01 (verified during P0 reconciliation pass) —
-      already present in code at vocab-trainer 2.0.html:994
+      already present in code at index.html:994
       (`existingIds.add(w.id)` inside the push branch).
 
 - [ ] **P3** — `repairWord`'s `firstRetrieval` validation accepts any
       string date and doesn't coerce `correct` to boolean, so malformed
       values can skew `computeFirstPostTeachingRetention`.
       Found: 2026-09-12. Location: `repairWord`
-      (vocab-trainer 2.0.html:806).
+      (index.html:806).
       Notes: Gate is only `typeof w.firstRetrieval.date === 'string'`.
       Fix: require `isValidDateStr(date)` and `typeof ts === 'number'`,
       and store `correct: !!correct`.
@@ -66,7 +66,7 @@ importJSON, load/save)
       "actually", "action", "acting" in hints/mnemonics/contexts that never
       contained "act" at all).
       Found: 2026-09-28 (Algorithm/Debugging Part 0 triage). Location:
-      `WordModel.maskWord` (vocab-trainer 2.0.html).
+      `WordModel.maskWord` (index.html).
       Fixed: the stem-plus-wildcard branch now only runs when the
       component is actually truncated (`p.length>6`); a ≤6-char word is
       already covered by the exact-match replace earlier in the function.
@@ -87,7 +87,7 @@ importJSON, load/save)
       deliberately deferred -- changing it shifts existing-user behavior
       and needs a decided policy reason, not an emergent fix.
       Found: 2026-09-28. Location: `WordModel.updateLadder`
-      (vocab-trainer 2.0.html:1295-1307).
+      (index.html:1295-1307).
       Notes: fix candidate is to filter `last5` on `h.level===level` the
       same way the promotion branch does, symmetric with how
       `computeMastery`/`buildDueQueue`'s `failedRecent` already filter
@@ -106,7 +106,7 @@ importJSON, load/save)
 - [ ] **P3** — `logError`'s `opts` parameter is duck-typed; a truthy
       non-opts 4th arg silently proceeds to the dim write.
       Found: 2026-09-12. Location: `WordModel.logError`
-      (vocab-trainer 2.0.html:1280).
+      (index.html:1280).
       Notes: Gate is `opts && opts.skipDimRecord`, so any truthy value
       without that key falls through to the `CATEGORY_TO_DIM` →
       `DimModel.record` write instead of erroring. No current caller passes
@@ -129,7 +129,7 @@ _(scanned 2026-09-12, no findings; genRecognition fix 2026-09-28)_
 - [x] **P1** — `Practice.genRecognition` could produce an unanswerable
       1-2 option MCQ when the bank has fewer than ~4 words with a meaning.
       Found: 2026-09-28 (Algorithm/Debugging Part 0 triage). Location:
-      `Practice.genRecognition` (vocab-trainer 2.0.html).
+      `Practice.genRecognition` (index.html).
       Fixed: falls back to a self-graded recall prompt (`autoGrade:false`,
       no `options`) when zero distractor words exist, instead of returning
       a single-option MCQ that always grades "correct" regardless of
@@ -176,7 +176,7 @@ _(scanned 2026-09-13, A1 fixed; A2/A3 deferred)_
       mean down. The `upToStable.length > 0` guard only excludes words
       trimmed entirely.
       Found: 2026-09-13. Location: `computeArmComparison`,
-      vocab-trainer 2.0.html:4141-4151.
+      index.html:4141-4151.
       Fix: exclude words whose `firstMasteryAt` predates `attempts[0].ts`,
       plus a card note that the metric covers only in-window words.
 
@@ -206,41 +206,41 @@ scan. Treat each as a lead, not a confirmed defect, until someone
 verifies it the way the entries above were verified.)_
 
 - `DimModel.record` silently no-ops on an unrecognized `dimKey`
-  (vocab-trainer 2.0.html:616-636).
+  (index.html:616-636).
 - `DimModel.record`'s failure path unconditionally demotes `status` to
   `'Developing'` on a single miss, regardless of `everAchievedAt`
-  (vocab-trainer 2.0.html:616-636).
+  (index.html:616-636).
 - `logError` writes `errorCounts`/`errorLog` even when
   `opts.skipDimRecord` is set — only the dim write is skipped
-  (vocab-trainer 2.0.html:1297).
+  (index.html:1297).
 - `updateLadder`'s demotion branch can fire on a correct answer via its
   early return, making "just got it right" and "just got it wrong"
   behaviourally identical when the trailing-5 rate is <0.5
-  (vocab-trainer 2.0.html:1302-1315).
+  (index.html:1302-1315).
 - `repairWord.srs.lastPracticed` accepted with no date-shape validation,
-  unlike every sibling date field (vocab-trainer 2.0.html:852).
+  unlike every sibling date field (index.html:852).
 - `repairWord.levelState.level` uses `||2` fallback, coercing a saved
   level `0` to `2` instead of clamping to `1`
-  (vocab-trainer 2.0.html:854).
+  (index.html:854).
 - `defaultState` comment claiming `dailyActivityBackfilledAt` is "never
   touched again" is stale — the merge branch does touch it
-  (vocab-trainer 2.0.html:726-728 vs :1059).
+  (index.html:726-728 vs :1059).
 - `achievements` repair accepts arbitrary keys with no validation against
-  known achievement ids (vocab-trainer 2.0.html:811-815).
+  known achievement ids (index.html:811-815).
 - `computeCalibration`/`computeBrier`/`computeRetentionByInterval`/
   `retentionN` each re-implement the same filter predicate independently
-  (vocab-trainer 2.0.html:3790-3792, :3847-3855, :4272).
+  (index.html:3790-3792, :3847-3855, :4272).
 - `CALIBRATION_BUCKETS` uses a `1.0001` epsilon for its tail bucket while
   `computeRetentionByInterval` uses `Infinity` for the same purpose —
   inconsistent idiom, not a bug.
 - `Audit.tags` entries carry a `word` field never validated against
   `Storage.state.words` before review-item creation
-  (vocab-trainer 2.0.html:3253).
+  (index.html:3253).
 - Teaching/Session coupling via hijacked function references
   (`_origRenderBeginTeaching`, `_backToSession`) is fragile and not a
-  documented pattern (vocab-trainer 2.0.html:2472).
+  documented pattern (index.html:2472).
 - `_pruneDeletedWord` has no Teaching block; harmless today because
-  Teaching has no resume path (vocab-trainer 2.0.html:2472).
+  Teaching has no resume path (index.html:2472).
 
 ## Future
 - Audit has no persistence — an in-progress essay and its tags are

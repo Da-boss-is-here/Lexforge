@@ -4,8 +4,8 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 
 ## Files
 
-- `vocab-trainer 2.0.html` — the whole app. Script body:
-  `vocab-trainer 2.0.html:430`-5442, IIFE-wrapped. Boot: `:5439`
+- `index.html` — the whole app. Script body:
+  `index.html:430`-5442, IIFE-wrapped. Boot: `:5439`
   (`DOMContentLoaded` → `App.init()`).
 - `lib/fsrs-scheduler.js` — FSRS card scheduling (one card per
   word+dimension), UMD export `:17`. `lib/due-queue.js` — builds/merges
@@ -17,7 +17,7 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   script from the HTML file in a `node:vm` sandbox (`extractAppScript()`
   :24). Not a copy — editing the app script changes this test directly.
 
-## Key sections in `vocab-trainer 2.0.html` (top-level objects, file order)
+## Key sections in `index.html` (top-level objects, file order)
 
 - `Utils` :435, `Speech` :480 — helpers; Web Speech TTS wrapper.
 - Config constants :502-575 (`AI_GENERATOR_PROMPT`, `ERROR_CATEGORIES`,
