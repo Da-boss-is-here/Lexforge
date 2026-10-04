@@ -17,6 +17,8 @@ A single-file vocabulary trainer that refuses to call a word mastered until you 
 
 The screenshots use a synthetic data set generated for this README, not real study data.
 
+For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+
 ## What makes it different
 
 - Eleven skill dimensions per word, not one.
@@ -75,7 +77,7 @@ Requires Node.js. The glob is needed; `node --test tests/` alone finds nothing.
 - `index.html` — the whole app: markup, styles, and one inline script.
 - `lib/` — FSRS scheduling and due-queue modules, shared by the app and the tests, plus the vendored `ts-fsrs` and Chart.js builds.
 - `tests/` — unit and smoke tests. The persistence smoke test loads the real script out of `index.html`.
-- `docs/` — README screenshots.
+- `docs/` — the [walkthrough](docs/WALKTHROUGH.md) and the screenshots used by it and the README.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to work on it, and [CONTEXT.md](CONTEXT.md) for a file and function map.
 

@@ -20,7 +20,9 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   script from the HTML file in a `node:vm` sandbox (`extractAppScript()`
   :24). Not a copy — editing the app script changes this test directly.
 
-- `docs/screenshots/` — README images (synthetic data, not real study data).
+- `docs/WALKTHROUGH.md` — annotated tour of every screen. `docs/screenshots/` — README
+  images plus `teaching/`, `practice/`, `views/` subfolders embedded by the walkthrough
+  (all synthetic data, not real study data).
 - `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` — public-facing docs.
 - `THIRD_PARTY_NOTICES.md` — attribution for vendored ts-fsrs, Chart.js and inlined @kurkle/color (versions, SHA-256, license text).
 
