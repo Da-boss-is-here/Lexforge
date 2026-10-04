@@ -1,4 +1,4 @@
-# Core Vocabulary Trainer
+# LexForge
 
 A single-file vocabulary trainer that refuses to call a word mastered until you can write with it.
 
