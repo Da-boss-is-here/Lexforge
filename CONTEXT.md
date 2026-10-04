@@ -17,6 +17,9 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   script from the HTML file in a `node:vm` sandbox (`extractAppScript()`
   :24). Not a copy — editing the app script changes this test directly.
 
+- `docs/screenshots/` — README images (synthetic data, not real study data).
+- `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` — public-facing docs.
+
 ## Key sections in `index.html` (top-level objects, file order)
 
 - `Utils` :435, `Speech` :480 — helpers; Web Speech TTS wrapper.
