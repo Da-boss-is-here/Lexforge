@@ -33,6 +33,21 @@ Recognizing a word is only one part of knowing it. LexForge tracks whether you c
 | Practice centers on retrieval | Teach → retrieve → produce |
 | In-app exercises | Writing Audit tests real usage |
 
+## How is this different from Anki?
+
+Anki is a mature, general-purpose spaced-repetition tool, and recent versions can schedule with FSRS too. LexForge doesn't claim to out-schedule it, or that recall practice is new: an Anki reverse card (meaning → word) is already cued recall, on its own schedule.
+
+What LexForge adds is a stricter definition of "known" for vocabulary:
+
+- **Production unlock gating.** A word's FSRS production card only unlocks once its recognition stability passes a threshold. (The older level-based ladder, which also reaches free production, runs alongside it.)
+- **Free-production prompts.** You get a situation and a constraint and write your own sentence, instead of flipping a card.
+- **Mistake diagnosis.** A miss is sorted into one of seven categories (Meaning, Form, Spelling, Grammar, Collocation, Register, Selection) and tied to the skill it affects.
+- **Exam Ready needs production.** A word reaches Exam Ready only after independent production and novel application have succeeded, not on recognition or recall alone.
+
+**Free production is self-checked.** The app shows your sentence next to the word's meaning, collocations, grammar, and contrast, and you mark whether it was right. There is no AI grading and no automatic check, so the result is only as honest as your own judgment.
+
+Where Anki is the better choice: a huge ecosystem of decks and add-ons, mobile apps, and sync. LexForge is one browser's `localStorage` (export and import by hand), and it only does vocabulary.
+
 ## Why I built this
 
 I kept noticing a problem with vocabulary apps: recognizing a word feels like knowing it, but recognition and actual use are very different skills.
