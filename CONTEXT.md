@@ -20,6 +20,9 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   script from the HTML file in a `node:vm` sandbox (`extractAppScript()`
   :24). Not a copy — editing the app script changes this test directly.
 
+- `scripts/capture-demo.js` — Playwright + ffmpeg script that regenerates `assets/demo.gif` /
+  `assets/demo.mp4` from the sample-words flow (dev-only; the repo has no npm deps).
+  `assets/` — README hero GIF and MP4 (synthetic data).
 - `docs/WALKTHROUGH.md` — annotated tour of every screen. `docs/screenshots/` — README
   images plus `analytics/`, `teaching/`, `practice/`, `views/` subfolders embedded by the walkthrough
   (all synthetic data, not real study data).
