@@ -22,7 +22,8 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 
 - `scripts/capture-demo.js` — Playwright + ffmpeg script that regenerates `assets/demo.gif` /
   `assets/demo.mp4` from the sample-words flow (dev-only; the repo has no npm deps).
-  `assets/` — README hero GIF and MP4 (synthetic data).
+  `assets/` — README hero GIF and MP4 (synthetic data) and `social-preview.png` (1280x640,
+  rendered from `scripts/social-preview.html`; uploaded by hand in repo Settings, not referenced by the app).
 - `docs/WALKTHROUGH.md` — annotated tour of every screen. `docs/screenshots/` — README
   images plus `analytics/`, `teaching/`, `practice/`, `views/` subfolders embedded by the walkthrough
   (all synthetic data, not real study data).
