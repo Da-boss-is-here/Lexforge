@@ -2498,3 +2498,50 @@ test('WordModel.maskWord still masks an exact occurrence of a short target word'
   const masked = E.WordModel.maskWord('She had to act quickly.', 'act');
   assert.equal(masked, 'She had to _____ quickly.');
 });
+
+test('Views.loadSampleWords: loads 5 taught, sample-prefixed words and queues recognition then two free-production cards', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.App.showTab = () => {}; // rendering needs a real DOM; these tests are about state
+  E.Views.loadSampleWords();
+  const words = E.Storage.state.words;
+  assert.equal(words.length, 5);
+  assert.ok(words.every(w => w.id.startsWith('sample-')), 'every sample word is marked by its id prefix');
+  assert.ok(words.every(w => w.teaching.completed), 'sample words skip Teaching');
+  assert.deepEqual(Array.from(E.Practice.session.queue, i => i.level), [1, 4, 4]);
+  assert.ok(E.Practice.session.queue.every(i => !i.track), 'legacy-track items: scheduler logic is not involved');
+  assert.ok(E.Storage.state.practiceSession, 'the session is persisted so a refresh resumes it');
+});
+
+test('Views.removeSampleWords: purges sample words and their logs, leaves a real word and its logs alone', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.App.showTab = () => {}; // rendering needs a real DOM; these tests are about state
+  E.Modal.confirm = (msg, onYes) => onYes();
+  const real = E.WordModel.create({
+    word: 'ephemeral', meaning: 'brief', form: 'adjective', grammar: '', collocations: ['a', 'b'],
+    contrast: 'x', contexts: ['a', 'b'], production: 'p', cloze: [], wordType: 'general'
+  });
+  E.Storage.state.words.push(real);
+  E.Views.loadSampleWords();
+  const sample = E.Storage.state.words.find(w => w.id.startsWith('sample-'));
+  E.WordModel.logError(sample, 'Collocation', 4);
+  E.WordModel.logError(real, 'Spelling', 4);
+  E.Views.removeSampleWords();
+  const st = E.Storage.state;
+  assert.deepEqual(Array.from(st.words, w => w.word), ['ephemeral']);
+  assert.ok(st.errorLog.every(e => !String(e.wordId).startsWith('sample-')));
+  assert.equal(st.errorLog.length, 1, "the real word's error log entry survives");
+  assert.equal(st.practiceSession, null, 'the sample practice session is dropped with its words');
+});
+
+test('Views.removeSampleWords: clears the first_word milestone that loading the samples stamped', () => {
+  const { exports: E } = buildSandbox();
+  E.Storage.load();
+  E.App.showTab = () => {}; // rendering needs a real DOM; these tests are about state
+  E.Modal.confirm = (msg, onYes) => onYes();
+  E.Views.loadSampleWords();
+  assert.ok(E.Storage.state.milestones.some(m => m.type === 'first_word'));
+  E.Views.removeSampleWords();
+  assert.equal(E.Storage.state.milestones.length, 0);
+});
