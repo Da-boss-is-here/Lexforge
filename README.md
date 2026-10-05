@@ -1,54 +1,67 @@
 # LexForge
 
-Knowing a word isn't the same as recognizing it.
+### A vocabulary trainer that tests whether you can actually use a word.
 
-Most vocabulary apps ask: **"Do you remember this word?"**  
-LexForge asks: **"Can you actually use it?"**
+> Most vocabulary apps test recognition.<br>
+> **LexForge tests production.**
 
-[🚀 Try LexForge](https://da-boss-is-here.github.io/Lexforge/) · [View on GitHub](https://github.com/Da-boss-is-here/Lexforge)
+Recognizing a word is only one part of knowing it. LexForge tracks whether you can retrieve it, distinguish it, use it correctly, and produce it in writing.
 
-<!-- TODO: docs/demo.gif — 10-15s loop:
-     Dashboard → Add word → Teaching step →
-     Recognition question → Cloze → Free production →
-     Error diagnosis → Analytics → "Exam Ready"
-     Capture from the live app at 1200px width,
-     loop-friendly, under 3MB. -->
-![LexForge demo](docs/demo.gif)
+**[🚀 Try LexForge](https://da-boss-is-here.github.io/Lexforge/)** · [How it works ↓](#how-lexforge-works)
 
-LexForge is a vocabulary trainer built around productive knowledge — 11 skill dimensions, diagnosed mistakes, adaptive spaced repetition, and writing-based mastery.
+<!-- TODO: docs/demo.gif — replace the screenshot below once recorded.
+     10-12s loop that tells the product story, not a UI tour.
+     First visual must communicate: recognition ≠ production.
+
+       0-2s   Show a word such as "substantiate";
+              recognition succeeds
+       2-5s   Switch to free production; the user must
+              actually use the word
+       5-7s   Show the resulting mistake diagnosis
+       7-9s   Show Writing Audit / contextual usage
+       9-12s  Show progression toward Exam Ready
+
+     Don't open on the dashboard or settings.
+     ~1200px capture width, no browser chrome, no
+     unnecessary cursor movement, smooth loop, as small
+     as practical (ideally under 1 MB). -->
+<img src="docs/screenshots/practice/04-production.png" width="560" alt="LexForge free-production question: a situation is described, and you write your own sentence using the word.">
+
+**A word isn't Exam Ready just because you recognized it — LexForge requires successful independent production and novel application.**
 
 - ✍️ Mastery requires real production
 - 🧠 11 dimensions of vocabulary knowledge
 - 🔎 7 categories of mistake diagnosis
-- 📈 FSRS-6 scheduling per skill
+- 📈 FSRS-6 scheduling for recognition, meaning recall, and production
 - 🔒 Fully local — no account, no server, no network
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![offline-first](https://img.shields.io/badge/offline--first-yes-brightgreen) ![no build required](https://img.shields.io/badge/no%20build-required-brightgreen) ![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
-
 <!-- TODO: Upload a custom repository Social Preview in
-     Settings → Social preview.
+     Settings → Social preview (1280×640, under 1 MB).
 
-     Size: 1280×640
      Text:
        LEXFORGE
+
        Knowing a word
        ≠
        being able to use it.
 
      Subtext: "A vocabulary trainer built around productive
      recall."
-     Visual: cropped practice screen on the right side. -->
+     Visual: clean crop of the production/practice screen,
+     right side of the composition. High contrast, readable
+     at small link-preview size. No tiny text, no badges,
+     no feature list. -->
 
 ## Why LexForge?
 
-| Traditional flashcards | LexForge |
+| Conventional flashcards | LexForge |
 |---|---|
-| "I recognized it" | "I produced it" |
-| One card = one score | 11 skill dimensions |
-| Correct / incorrect | Diagnosed error type |
-| Review whenever | Adaptive scheduling per skill |
-| Learn by seeing | Teach → retrieve → produce |
-| Vocabulary stays in the app | Writing Audit tests real usage |
+| Recognition can feel like mastery | Mastery requires production |
+| One-dimensional card state | 11 skill dimensions |
+| Wrong answer → mark incorrect | Diagnose the type of mistake |
+| Review at the word/card level | FSRS-6 for recognition, meaning recall, and production |
+| Practice centers on retrieval | Teach → retrieve → produce |
+| In-app exercises | Writing Audit tests real usage |
 
 ## Why I built this
 
@@ -58,19 +71,22 @@ A student can recognize *substantiate* in a multiple-choice question and still f
 
 So I built LexForge around the idea that vocabulary mastery should end in production, not recognition.
 
-The whole app is one HTML file, plus the libraries vendored alongside it. Open `index.html` and start.
+## How LexForge works
 
-## Highlights
+```text
+Teach → Retrieve → Produce → Diagnose → Schedule → Apply in writing
+```
 
-A single-file vocabulary trainer that refuses to call a word mastered until you can write with it.
-
-- Eleven skill dimensions per word, not one.
-- Production is required for mastery, not optional.
-- Every mistake is diagnosed into one of seven categories.
-- FSRS-6 spaced repetition, scheduled per-skill.
-- Teaching before retrieval — no word enters practice until it's been taught.
+1. **Teach.** Every new word goes through a guided eight-step flow, from introduction and contextual examples to constrained and independent production. No word enters practice until it has been taught.
+2. **Retrieve.** Recognition, cued recall, and cloze questions check that you can bring the word to mind, in a Daily Session, a due-only Quick Review, or targeted drills.
+3. **Produce.** Free production gives you a situation and asks you to write your own sentence with the word, then check it yourself.
+4. **Diagnose.** A mistake isn't just marked wrong. It's sorted into one of seven categories (Meaning, Form, Spelling, Grammar, Collocation, Register, Selection) and tied to the skill dimension it affects.
+5. **Schedule.** Recognition, meaning recall, and production each get their own FSRS-6 card per word, and production cards unlock once recognition is stable. The other dimensions use an older level-based ladder.
+6. **Apply in writing.** The Writing Audit lets you paste your own writing and tag errors against words in your bank, and matched errors feed back into scheduling. A word reaches Exam Ready only once independent production and novel application have both succeeded.
 
 ## Screenshots
+
+The workflow, from the dashboard to a production question to analytics.
 
 ![Dashboard](docs/screenshots/dashboard.png)
 ![Practice](docs/screenshots/practice.png)
@@ -79,6 +95,8 @@ A single-file vocabulary trainer that refuses to call a word mastered until you 
 The screenshots use a synthetic data set generated for this README, not real study data.
 
 For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![offline-first](https://img.shields.io/badge/offline--first-yes-brightgreen) ![no build required](https://img.shields.io/badge/no%20build-required-brightgreen) ![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
 
 ## Features
 
@@ -114,8 +132,9 @@ For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.m
 
 ## Try it
 
-- Live demo: https://da-boss-is-here.github.io/Lexforge/
-- Run locally: open `index.html` in a browser. No server, no build, no install.
+**Live demo:** https://da-boss-is-here.github.io/Lexforge/
+
+**Run locally:** open `index.html` in a browser. No server, no build, no install. The app is one HTML file plus the libraries vendored in `lib/`.
 
 ## Tests
 
