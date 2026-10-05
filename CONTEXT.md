@@ -5,7 +5,7 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 ## Files
 
 - `index.html` — the whole app. Script body:
-  `index.html:430`-5442, IIFE-wrapped. Boot: `:5439`
+  `index.html:443`-5697, IIFE-wrapped. Boot: `:5695`
   (`DOMContentLoaded` → `App.init()`).
 - `lib/fsrs-scheduler.js` — FSRS card scheduling (one card per
   word+dimension), UMD export `:17`. `lib/due-queue.js` — builds/merges
@@ -20,6 +20,11 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
   script from the HTML file in a `node:vm` sandbox (`extractAppScript()`
   :24). Not a copy — editing the app script changes this test directly.
 
+- `scripts/capture-demo.js` — Playwright + ffmpeg script that regenerates `assets/demo.gif` /
+  `assets/demo.mp4` from the sample-words flow (dev-only; the repo has no npm deps).
+  `assets/` — README hero GIF and MP4 (synthetic data) and `social-preview.png` (1280x640,
+  rendered from `scripts/social-preview.html`; uploaded by hand in repo Settings, not referenced by the app).
+- `docs/issue-drafts/`, `docs/release-v1.0.md`, `docs/launch-handoff.md` — launch-prep drafts and hand-off steps (not published; delete after launch).
 - `docs/WALKTHROUGH.md` — annotated tour of every screen. `docs/screenshots/` — README
   images plus `analytics/`, `teaching/`, `practice/`, `views/` subfolders embedded by the walkthrough
   (all synthetic data, not real study data).
@@ -45,7 +50,9 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 - `Practice` :1453 — session/question building; `buildDueQueue` ~1505 uses
   `DueQueue` (lib) for FSRS items + legacy level-based items; FSRS grading
   ~1556 calls `FSRSScheduler.grade`.
-- `App` :1840 (tab routing, `init()` :1844); `Views` :1926 (view renderers);
+- `App` :1929 (tab routing); `Views` :2025 (view renderers; `loadSampleWords`/`removeSampleWords`
+  ~:2167, backed by `SAMPLE_PREFIX`/`SAMPLE_WORD_LINES` ~:2015 -- the empty Dashboard's
+  "Try with sample words"; sample ids start with `sample-`, which is the only marker);
   `Modal` :3122, `Audit` :3139; `Exam` :3279 (exam-mode).
 - Analytics helpers :3649-4050 feed `Analytics` :4051. `Session` :4694 —
   free-practice runner (`MAX_SESSION` = 25). `Teaching` :4953 — guided

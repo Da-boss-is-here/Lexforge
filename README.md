@@ -1,31 +1,18 @@
-# LexForge
+# LexForge — Productive Vocabulary Trainer
 
-### A vocabulary trainer that tests whether you can actually use a word.
+**Recognizing a word is the easiest part of knowing it — most vocabulary apps stop there. LexForge makes you produce it.**
 
-> Most vocabulary apps test recognition.<br>
-> **LexForge tests production.**
+![LexForge demo: recognize a word, write a sentence with it, get the mistake diagnosed, and retry](assets/demo.gif)
+
+### [Try it in your browser — no account, no install →](https://da-boss-is-here.github.io/Lexforge/)
+
+On the first screen, click **Try with sample words** to go from recognition to writing your own sentence in one click. You judge your own sentences: free production is self-checked, and nothing in the app grades it.
+
+![No account](https://img.shields.io/badge/no%20account-required-brightgreen) ![Local-only](https://img.shields.io/badge/local--only-no%20network-brightgreen) ![MIT](https://img.shields.io/badge/license-MIT-blue)
+
+[How it works ↓](#how-lexforge-works)
 
 Recognizing a word is only one part of knowing it. LexForge tracks whether you can retrieve it, distinguish it, use it correctly, and produce it in writing.
-
-**[🚀 Try LexForge](https://da-boss-is-here.github.io/Lexforge/)** · [How it works ↓](#how-lexforge-works)
-
-<!-- TODO: docs/demo.gif — replace the screenshot below once recorded.
-     10-12s loop that tells the product story, not a UI tour.
-     First visual must communicate: recognition ≠ production.
-
-       0-2s   Show a word such as "substantiate";
-              recognition succeeds
-       2-5s   Switch to free production; the user must
-              actually use the word
-       5-7s   Show the resulting mistake diagnosis
-       7-9s   Show Writing Audit / contextual usage
-       9-12s  Show progression toward Exam Ready
-
-     Don't open on the dashboard or settings.
-     ~1200px capture width, no browser chrome, no
-     unnecessary cursor movement, smooth loop, as small
-     as practical (ideally under 1 MB). -->
-<img src="docs/screenshots/practice/04-production.png" width="560" alt="LexForge free-production question: a situation is described, and you write your own sentence using the word.">
 
 **A word isn't Exam Ready just because you recognized it — LexForge requires successful independent production and novel application.**
 
@@ -34,23 +21,6 @@ Recognizing a word is only one part of knowing it. LexForge tracks whether you c
 - 🔎 7 categories of mistake diagnosis
 - 📈 FSRS-6 scheduling for recognition, meaning recall, and production
 - 🔒 Fully local — no account, no server, no network
-
-<!-- TODO: Upload a custom repository Social Preview in
-     Settings → Social preview (1280×640, under 1 MB).
-
-     Text:
-       LEXFORGE
-
-       Knowing a word
-       ≠
-       being able to use it.
-
-     Subtext: "A vocabulary trainer built around productive
-     recall."
-     Visual: clean crop of the production/practice screen,
-     right side of the composition. High contrast, readable
-     at small link-preview size. No tiny text, no badges,
-     no feature list. -->
 
 ## Why LexForge?
 
@@ -62,6 +32,21 @@ Recognizing a word is only one part of knowing it. LexForge tracks whether you c
 | Review at the word/card level | FSRS-6 for recognition, meaning recall, and production |
 | Practice centers on retrieval | Teach → retrieve → produce |
 | In-app exercises | Writing Audit tests real usage |
+
+## How is this different from Anki?
+
+Anki is a mature, general-purpose spaced-repetition tool, and recent versions can schedule with FSRS too. LexForge doesn't claim to out-schedule it, or that recall practice is new: an Anki reverse card (meaning → word) is already cued recall, on its own schedule.
+
+What LexForge adds is a stricter definition of "known" for vocabulary:
+
+- **Production unlock gating.** A word's FSRS production card only unlocks once its recognition stability passes a threshold. (The older level-based ladder, which also reaches free production, runs alongside it.)
+- **Free-production prompts.** You get a situation and a constraint and write your own sentence, instead of flipping a card.
+- **Mistake diagnosis.** A miss is sorted into one of seven categories (Meaning, Form, Spelling, Grammar, Collocation, Register, Selection) and tied to the skill it affects.
+- **Exam Ready needs production.** A word reaches Exam Ready only after independent production and novel application have succeeded, not on recognition or recall alone.
+
+**Free production is self-checked.** The app shows your sentence next to the word's meaning, collocations, grammar, and contrast, and you mark whether it was right. There is no AI grading and no automatic check, so the result is only as honest as your own judgment.
+
+Where Anki is the better choice: a huge ecosystem of decks and add-ons, mobile apps, and sync. LexForge is one browser's `localStorage` (export and import by hand), and it only does vocabulary.
 
 ## Why I built this
 
@@ -88,6 +73,8 @@ Teach → Retrieve → Produce → Diagnose → Schedule → Apply in writing
 
 The workflow, from the dashboard to a production question to analytics.
 
+![Free-production question: a situation is described, and you write your own sentence using the word](docs/screenshots/practice/04-production.png)
+
 ![Dashboard](docs/screenshots/dashboard.png)
 ![Practice](docs/screenshots/practice.png)
 ![Analytics](docs/screenshots/analytics.png)
@@ -96,7 +83,7 @@ The screenshots use a synthetic data set generated for this README, not real stu
 
 For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![offline-first](https://img.shields.io/badge/offline--first-yes-brightgreen) ![no build required](https://img.shields.io/badge/no%20build-required-brightgreen) ![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
+![offline-first](https://img.shields.io/badge/offline--first-yes-brightgreen) ![no build required](https://img.shields.io/badge/no%20build-required-brightgreen) ![tests: 166 passing](https://img.shields.io/badge/tests-166%20passing-brightgreen)
 
 ## Features
 
@@ -134,6 +121,8 @@ For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.m
 
 **Live demo:** https://da-boss-is-here.github.io/Lexforge/
 
+**First run:** the bank starts empty. **Try with sample words** loads five demo words (flagged as sample data, removable from the Dashboard) and starts a short recognition → production round without the Teaching flow. Or add your own words.
+
 **Run locally:** open `index.html` in a browser. No server, no build, no install. The app is one HTML file plus the libraries vendored in `lib/`.
 
 ## Tests
@@ -149,6 +138,7 @@ Requires Node.js. The glob is needed; `node --test tests/` alone finds nothing.
 - `index.html` — the whole app: markup, styles, and one inline script.
 - `lib/` — FSRS scheduling and due-queue modules, shared by the app and the tests, plus the vendored `ts-fsrs` and Chart.js builds.
 - `tests/` — unit and smoke tests. The persistence smoke test loads the real script out of `index.html`.
+- `assets/` — the README demo GIF/MP4, regenerated by `scripts/capture-demo.js` (dev-only; needs Playwright and ffmpeg, which the repo doesn't depend on).
 - `docs/` — the [walkthrough](docs/WALKTHROUGH.md) and the screenshots used by it and the README.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to work on it, and [CONTEXT.md](CONTEXT.md) for a file and function map.

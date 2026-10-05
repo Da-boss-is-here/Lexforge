@@ -20,7 +20,7 @@ no build step — all state lives in `localStorage`.
 ## Architecture
 
 - **`index.html`** is the entire app — markup, CSS, and one
-  inline `<script>` (starting at `index.html:430`, IIFE-wrapped,
+  inline `<script>` (starting at `index.html:443`, IIFE-wrapped,
   booted via `DOMContentLoaded` → `App.init()` near the end of the file).
   There is no other copy of the app; a prior `vocab-trainer.html` was
   deleted and must not be recreated.

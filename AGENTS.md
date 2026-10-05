@@ -5,7 +5,7 @@ Rules for AI agents (and humans) working in this repo.
 ## Project layout
 
 - `index.html` — the entire app: HTML + CSS + one inline `<script>`
-  (starts `index.html:430`). No build step, no bundler. Open the
+  (starts `index.html:443`). No build step, no bundler. Open the
   file directly in a browser to run it.
 - `lib/fsrs.umd.js` — vendored third-party FSRS library (do not hand-edit;
   see `lib/fsrs.LICENSE`).

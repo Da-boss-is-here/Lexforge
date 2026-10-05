@@ -164,7 +164,13 @@ _(scanned 2026-09-13, S1 fixed)_
 _(scanned 2026-09-13, E1/E2/A1/A2 fixed)_
 
 ## Views
-_(scanned 2026-09-13, no findings)_
+- [ ] **P3** — `Views.removeSampleWords` can't roll back aggregate counters:
+      the demo's `dailyActivity` counts and the `first_word` achievement stay
+      after the sample words are removed (word-keyed logs and milestones are purged).
+      Found: 2026-10-05. Location: `Views.removeSampleWords`.
+      Notes: `dailyActivity` is per-day totals with no per-word breakdown, so the
+      demo's contribution can't be subtracted exactly. Deferred: cosmetic, and
+      only affects someone who tries the samples and then keeps using the app.
 
 ## Analytics
 _(scanned 2026-09-13, A1 fixed; A2/A3 deferred)_
