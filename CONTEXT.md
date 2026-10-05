@@ -5,7 +5,7 @@ Map of the codebase. Keep this current — see AGENTS.md's update rule.
 ## Files
 
 - `index.html` — the whole app. Script body:
-  `index.html:430`-5684, IIFE-wrapped. Boot: `:5682`
+  `index.html:443`-5697, IIFE-wrapped. Boot: `:5695`
   (`DOMContentLoaded` → `App.init()`).
 - `lib/fsrs-scheduler.js` — FSRS card scheduling (one card per
   word+dimension), UMD export `:17`. `lib/due-queue.js` — builds/merges
