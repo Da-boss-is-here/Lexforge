@@ -1,13 +1,74 @@
 # LexForge
 
+Knowing a word isn't the same as recognizing it.
+
+Most vocabulary apps ask: **"Do you remember this word?"**  
+LexForge asks: **"Can you actually use it?"**
+
+[🚀 Try LexForge](https://da-boss-is-here.github.io/Lexforge/) · [View on GitHub](https://github.com/Da-boss-is-here/Lexforge)
+
+<!-- TODO: docs/demo.gif — 10-15s loop:
+     Dashboard → Add word → Teaching step →
+     Recognition question → Cloze → Free production →
+     Error diagnosis → Analytics → "Exam Ready"
+     Capture from the live app at 1200px width,
+     loop-friendly, under 3MB. -->
+![LexForge demo](docs/demo.gif)
+
+LexForge is a vocabulary trainer built around productive knowledge — 11 skill dimensions, diagnosed mistakes, adaptive spaced repetition, and writing-based mastery.
+
+- ✍️ Mastery requires real production
+- 🧠 11 dimensions of vocabulary knowledge
+- 🔎 7 categories of mistake diagnosis
+- 📈 FSRS-6 scheduling per skill
+- 🔒 Fully local — no account, no server, no network
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![offline-first](https://img.shields.io/badge/offline--first-yes-brightgreen) ![no build required](https://img.shields.io/badge/no%20build-required-brightgreen) ![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
+
+<!-- TODO: Upload a custom repository Social Preview in
+     Settings → Social preview.
+
+     Size: 1280×640
+     Text:
+       LEXFORGE
+       Knowing a word
+       ≠
+       being able to use it.
+
+     Subtext: "A vocabulary trainer built around productive
+     recall."
+     Visual: cropped practice screen on the right side. -->
+
+## Why LexForge?
+
+| Traditional flashcards | LexForge |
+|---|---|
+| "I recognized it" | "I produced it" |
+| One card = one score | 11 skill dimensions |
+| Correct / incorrect | Diagnosed error type |
+| Review whenever | Adaptive scheduling per skill |
+| Learn by seeing | Teach → retrieve → produce |
+| Vocabulary stays in the app | Writing Audit tests real usage |
+
+## Why I built this
+
+I kept noticing a problem with vocabulary apps: recognizing a word feels like knowing it, but recognition and actual use are very different skills.
+
+A student can recognize *substantiate* in a multiple-choice question and still fail to retrieve it, distinguish it from *prove*, use the wrong preposition, or avoid using it in writing entirely.
+
+So I built LexForge around the idea that vocabulary mastery should end in production, not recognition.
+
+The whole app is one HTML file, plus the libraries vendored alongside it. Open `index.html` and start.
+
+## Highlights
+
 A single-file vocabulary trainer that refuses to call a word mastered until you can write with it.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue)
-![single file](https://img.shields.io/badge/app-single%20file-lightgrey)
-![no dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
-![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen)
-
-**Live demo:** https://da-boss-is-here.github.io/Lexforge/
+- Eleven skill dimensions per word, not one.
+- Production is required for mastery, not optional.
+- Every mistake is diagnosed into one of seven categories.
+- FSRS-6 spaced repetition, scheduled per-skill.
+- Teaching before retrieval — no word enters practice until it's been taught.
 
 ## Screenshots
 
@@ -18,14 +79,6 @@ A single-file vocabulary trainer that refuses to call a word mastered until you 
 The screenshots use a synthetic data set generated for this README, not real study data.
 
 For a full walkthrough with screenshots of every screen, see [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
-
-## What makes it different
-
-- Eleven skill dimensions per word, not one.
-- Production is required for mastery, not optional.
-- Every mistake is diagnosed into one of seven categories.
-- FSRS-6 spaced repetition, scheduled per-skill.
-- Teaching before retrieval — no word enters practice until it's been taught.
 
 ## Features
 
